@@ -1,0 +1,131 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "sqlite"
+  url      = "file:dev.sqlite"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model AmazonProduct {
+  id               String   @id @default(cuid())
+  asin             String   @unique
+  title            String
+  brand            String?
+  category         String?
+  description      String?
+  featureBullets   String?
+  price            Float?
+  salePrice        Float?
+  inStock          Boolean  @default(true)
+  stockQuantity    Int?
+  outOfStock       Boolean  @default(false)
+  shippingPrice    Float?
+  primeEligible    Boolean  @default(false)
+  mainImage        String?
+  images           String?
+  variants         String?
+  rating           Float?
+  ratingsTotal     Int?
+  reviews          String?
+  bestsellRank     Int?
+  amazonUrl        String?
+  shopifyProductId String?
+  shopifyVariantId String?
+  shopifyHandle    String?
+  marginRate       Float    @default(30)
+  shopifyPrice     Float?
+  lastSyncedAt     DateTime?
+  syncStatus       String   @default("pending")
+  syncError        String?
+  riskLevel        String   @default("safe")
+  filterStatus     String   @default("ok")
+  filterReason     String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model AppSettings {
+  id                String   @id @default(cuid())
+  shop              String   @unique
+  defaultMargin     Float    @default(30)
+  includeShipping   Boolean  @default(false)
+  autoHideOutOfStock Boolean @default(true)
+  addReviewsToDesc  Boolean  @default(true)
+  autoGenerateTags  Boolean  @default(true)
+  saleMode          String   @default("direct")
+  addDisclaimer     Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model BrandBlacklist {
+  id        String   @id @default(cuid())
+  brand     String   @unique
+  riskLevel String   @default("high")
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model CategoryBlacklist {
+  id        String   @id @default(cuid())
+  category  String   @unique
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model KeywordFilter {
+  id        String   @id @default(cuid())
+  keyword   String   @unique
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model SchedulerConfig {
+  id         String    @id @default(cuid())
+  shop       String    @unique
+  schedule   String    @default("daily")
+  enabled    Boolean   @default(false)
+  lastRunAt  DateTime?
+  nextRunAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model UpdateLog {
+  id        String   @id @default(cuid())
+  shop      String?
+  asin      String?
+  action    String
+  status    String
+  message   String?
+  oldValue  String?
+  newValue  String?
+  createdAt DateTime @default(now())
+}
