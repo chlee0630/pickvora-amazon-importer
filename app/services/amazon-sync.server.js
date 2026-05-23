@@ -55,6 +55,18 @@ export async function importASINs(asins, shop, accessToken, overrideBlocks = fal
       // Fetch Amazon data
       const amazonData = await fetchProductDetails(trimmed);
 
+      if (amazonData.cannotBeShipped) {
+        const reason = amazonData.shippingUnavailableReason || "This item cannot be shipped to the selected location";
+        await addLog(shop, trimmed, "import", "skipped", `Shipping unavailable: ${reason}`);
+        results.push({
+          asin: trimmed,
+          status: "blocked",
+          filterReason: reason,
+          title: amazonData.title,
+        });
+        continue;
+      }
+
       // Run copyright filter
       const filterResult = await checkProductFilter(amazonData);
       const { blocked, riskLevel, filterReason } = filterResult;
@@ -141,15 +153,21 @@ export async function syncProduct(product, shop, accessToken) {
     // Re-check filter on sync
     const filterResult = await checkProductFilter(amazonData);
     const wasOutOfStock = product.outOfStock;
-    const isNowOutOfStock = amazonData.outOfStock;
+    const isNowActive = amazonData.availabilityStatus === "in_stock";
     const oldPrice = product.price;
     const newPrice = amazonData.price;
 
     if (product.shopifyProductId) {
-      if (isNowOutOfStock && settings.autoHideOutOfStock) {
+      if (!isNowActive && settings.autoHideOutOfStock) {
         await hideShopifyProduct(shop, accessToken, product.shopifyProductId);
-        await addLog(shop, product.asin, "hidden", "success", "Product hidden (out of stock)");
-      } else if (wasOutOfStock && !isNowOutOfStock) {
+        await addLog(
+          shop,
+          product.asin,
+          "hidden",
+          "success",
+          `Product set to draft (${amazonData.availabilityStatus || "unavailable"})`,
+        );
+      } else if (wasOutOfStock && isNowActive) {
         await showShopifyProduct(shop, accessToken, product.shopifyProductId);
         await addLog(shop, product.asin, "stock_update", "success", "Product shown (back in stock)");
       }
@@ -168,7 +186,7 @@ export async function syncProduct(product, shop, accessToken) {
         data: {
           ...amazonData,
           shopifyPrice,
-          syncStatus: isNowOutOfStock ? "hidden" : "synced",
+          syncStatus: isNowActive ? "synced" : "hidden",
           syncError: null,
           lastSyncedAt: new Date(),
           riskLevel: filterResult.riskLevel,
@@ -176,6 +194,28 @@ export async function syncProduct(product, shop, accessToken) {
         },
       });
     } else {
+      if (amazonData.cannotBeShipped) {
+        await prisma.amazonProduct.update({
+          where: { id: product.id },
+          data: {
+            ...amazonData,
+            syncStatus: "hidden",
+            syncError: null,
+            lastSyncedAt: new Date(),
+            riskLevel: filterResult.riskLevel,
+            filterReason: filterResult.filterReason,
+          },
+        });
+        await addLog(
+          shop,
+          product.asin,
+          "sync",
+          "skipped",
+          `Shipping unavailable, Shopify creation skipped: ${amazonData.shippingUnavailableReason || "cannot_be_shipped"}`,
+        );
+        return;
+      }
+
       const shopifyResult = await createShopifyProduct(shop, accessToken, amazonData, settings);
       await prisma.amazonProduct.update({
         where: { id: product.id },

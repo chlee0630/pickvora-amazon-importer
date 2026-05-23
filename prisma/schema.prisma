@@ -46,6 +46,9 @@ model AmazonProduct {
   inStock          Boolean  @default(true)
   stockQuantity    Int?
   outOfStock       Boolean  @default(false)
+  availabilityStatus String?
+  cannotBeShipped Boolean  @default(false)
+  shippingUnavailableReason String?
   shippingPrice    Float?
   primeEligible    Boolean  @default(false)
   mainImage        String?

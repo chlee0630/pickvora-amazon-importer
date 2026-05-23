@@ -5,6 +5,7 @@ node_modules
 
 # AI assistant config (personal)
 .claude/
+CLAUDE.md
 .gemini/
 .cursor/
 .mcp.json

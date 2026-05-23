@@ -28,6 +28,7 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
   const shopifyPrice = calcPrice(amazonData, settings);
   const tags = buildTags(amazonData, settings);
   const descHtml = buildDescription(amazonData, settings);
+  const variantImport = buildVariantImport(amazonData, settings);
 
   const createRes = await adminFetch(shop, accessToken, `
     mutation productCreate($product: ProductCreateInput!) {
@@ -35,8 +36,14 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
         product {
           id
           handle
+          options {
+            id
+            name
+            position
+            optionValues { id name }
+          }
           variants(first: 1) {
-            edges { node { id } }
+            nodes { id }
           }
         }
         userErrors { field message }
@@ -48,8 +55,11 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
       descriptionHtml: descHtml,
       vendor: amazonData.brand || "Amazon",
       tags,
-      status: amazonData.outOfStock ? "DRAFT" : "ACTIVE",
+      status: getShopifyStatus(amazonData),
       productType: amazonData.category?.split(" > ")[0] || "",
+      ...(variantImport.productOptions.length > 0
+        ? { productOptions: variantImport.productOptions }
+        : {}),
     },
   });
 
@@ -60,9 +70,19 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
   if (!product) throw new Error("Product creation returned no product");
 
   const productId = product.id;
-  const variantId = product.variants?.edges?.[0]?.node?.id;
+  const variantId = product.variants?.nodes?.[0]?.id;
 
-  if (variantId) {
+  let primaryVariantId = variantId;
+
+  if (variantImport.variants.length > 0) {
+    const createdVariants = await createShopifyVariants(
+      shop,
+      accessToken,
+      productId,
+      variantImport.variants,
+    );
+    primaryVariantId = findCurrentVariantId(createdVariants, amazonData.asin) || createdVariants[0]?.id || variantId;
+  } else if (variantId) {
     await adminFetch(shop, accessToken, `
       mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -71,7 +91,11 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
       }
     `, {
       productId,
-      variants: [{ id: variantId, price: shopifyPrice.toFixed(2) }],
+      variants: [{
+        id: variantId,
+        price: shopifyPrice.toFixed(2),
+        metafields: [amazonAsinMetafield(amazonData.asin)],
+      }],
     });
   }
 
@@ -98,7 +122,7 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
 
   return {
     shopifyProductId: productId,
-    shopifyVariantId: variantId,
+    shopifyVariantId: primaryVariantId,
     shopifyHandle: product.handle,
     shopifyPrice,
   };
@@ -120,7 +144,7 @@ export async function updateShopifyProduct(shop, accessToken, shopifyProductId, 
       id: shopifyProductId,
       descriptionHtml: descHtml,
       tags,
-      status: amazonData.outOfStock ? "DRAFT" : "ACTIVE",
+      status: getShopifyStatus(amazonData),
     },
   });
 
@@ -138,6 +162,34 @@ export async function updateShopifyProduct(shop, accessToken, shopifyProductId, 
   }
 
   return { shopifyPrice };
+}
+
+async function createShopifyVariants(shop, accessToken, productId, variants) {
+  const res = await adminFetch(shop, accessToken, `
+    mutation productVariantsBulkCreate(
+      $productId: ID!,
+      $variants: [ProductVariantsBulkInput!]!,
+      $strategy: ProductVariantsBulkCreateStrategy
+    ) {
+      productVariantsBulkCreate(productId: $productId, variants: $variants, strategy: $strategy) {
+        productVariants {
+          id
+          selectedOptions { name value }
+          metafield(namespace: "amazon", key: "asin") { value }
+        }
+        userErrors { field message }
+      }
+    }
+  `, {
+    productId,
+    variants,
+    strategy: "REMOVE_STANDALONE_VARIANT",
+  });
+
+  const errors = res.data?.productVariantsBulkCreate?.userErrors;
+  if (errors?.length) throw new Error(errors.map((e) => e.message).join(", "));
+
+  return res.data?.productVariantsBulkCreate?.productVariants || [];
 }
 
 async function getOnlineStorePublicationId(shop, accessToken) {
@@ -209,11 +261,98 @@ export async function showShopifyProduct(shop, accessToken, shopifyProductId) {
   `, { product: { id: shopifyProductId, status: "ACTIVE" } });
 }
 
+function getShopifyStatus(amazonData) {
+  if (amazonData.availabilityStatus) {
+    return amazonData.availabilityStatus === "in_stock" ? "ACTIVE" : "DRAFT";
+  }
+  return amazonData.outOfStock ? "DRAFT" : "ACTIVE";
+}
+
 function calcPrice(amazonData, settings) {
   const base = amazonData.price ?? 0;
   const shipping = settings.includeShipping ? (amazonData.shippingPrice ?? 0) : 0;
   const margin = settings.defaultMargin ?? 30;
   return Math.round((base + shipping) * (1 + margin / 100) * 100) / 100;
+}
+
+function buildVariantImport(amazonData, settings) {
+  const variants = safeParseJSON(amazonData.variants, [])
+    .filter((variant) => variant.asin && Array.isArray(variant.options) && variant.options.length > 0);
+
+  if (variants.length === 0) {
+    return { productOptions: [], variants: [] };
+  }
+
+  const optionNames = [];
+  variants.forEach((variant) => {
+    variant.options.forEach((option) => {
+      if (option.name && !optionNames.includes(option.name) && optionNames.length < 3) {
+        optionNames.push(option.name);
+      }
+    });
+  });
+
+  if (optionNames.length === 0) {
+    return { productOptions: [], variants: [] };
+  }
+
+  const productOptions = optionNames.map((name) => ({
+    name,
+    values: uniqueOptionValues(variants, name).map((value) => ({ name: value })),
+  }));
+
+  const shopifyVariants = variants
+    .map((variant) => buildShopifyVariantInput(variant, optionNames, amazonData, settings))
+    .filter(Boolean);
+
+  return { productOptions, variants: shopifyVariants };
+}
+
+function uniqueOptionValues(variants, optionName) {
+  const values = variants
+    .map((variant) => getVariantOptionValue(variant, optionName))
+    .filter(Boolean);
+  return [...new Set(values)];
+}
+
+function buildShopifyVariantInput(variant, optionNames, amazonData, settings) {
+  const optionValues = optionNames.map((optionName) => {
+    const value = getVariantOptionValue(variant, optionName);
+    return value ? { optionName, name: value } : null;
+  });
+
+  if (optionValues.some((value) => !value)) return null;
+
+  const variantPrice = calcPrice({ ...amazonData, price: variant.price ?? amazonData.price }, settings);
+  const input = {
+    price: variantPrice.toFixed(2),
+    optionValues,
+    metafields: [amazonAsinMetafield(variant.asin)],
+  };
+
+  if (variant.image) {
+    input.mediaSrc = [variant.image];
+  }
+
+  return input;
+}
+
+function getVariantOptionValue(variant, optionName) {
+  const option = variant.options.find((item) => item.name === optionName);
+  return option?.value ? String(option.value) : null;
+}
+
+function amazonAsinMetafield(asin) {
+  return {
+    namespace: "amazon",
+    key: "asin",
+    type: "single_line_text_field",
+    value: asin,
+  };
+}
+
+function findCurrentVariantId(variants, asin) {
+  return variants.find((variant) => variant.metafield?.value === asin)?.id || null;
 }
 
 function buildTags(amazonData, settings) {
