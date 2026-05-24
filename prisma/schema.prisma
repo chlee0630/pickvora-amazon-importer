@@ -132,3 +132,58 @@ model UpdateLog {
   newValue  String?
   createdAt DateTime @default(now())
 }
+
+model OrderWebhookLog {
+  id              String   @id @default(cuid())
+  shop            String
+  topic           String
+  webhookId       String?  @unique
+  shopifyOrderId  String
+  status          String   @default("received")
+  payload         String?
+  error           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([shop, shopifyOrderId])
+}
+
+model OrderQueueJob {
+  id              String    @id @default(cuid())
+  shop            String
+  type            String
+  status          String    @default("pending")
+  shopifyOrderId  String
+  provider        String    @default("zinc")
+  payload         String?
+  attempts        Int       @default(0)
+  maxAttempts     Int       @default(5)
+  runAt           DateTime  @default(now())
+  lockedAt        DateTime?
+  completedAt     DateTime?
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([shop, type, shopifyOrderId])
+  @@index([status, runAt])
+}
+
+model ProviderOrder {
+  id                String    @id @default(cuid())
+  shop              String
+  shopifyOrderId    String
+  provider          String
+  providerOrderId   String?
+  status            String    @default("pending")
+  requestPayload    String?
+  responsePayload   String?
+  processingLockedAt DateTime?
+  lastError         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([shop, shopifyOrderId, provider])
+  @@index([provider, providerOrderId])
+  @@index([status, processingLockedAt])
+}

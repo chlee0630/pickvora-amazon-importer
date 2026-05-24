@@ -4,19 +4,23 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
 import { initAllSchedulers } from "../services/scheduler.server";
 import { initDefaultFilters } from "../services/filter.server";
+import { initOrderWorkers } from "../workers/order-worker.server";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
 
   // Initialize schedulers and default filters once per server process
-  if (!globalThis.__appInitialized) {
-    globalThis.__appInitialized = true;
+  // eslint-disable-next-line no-undef
+  const g = globalThis;
+  if (!g.__appInitialized) {
+    g.__appInitialized = true;
     initAllSchedulers().catch((err) =>
       console.error("Scheduler init error:", err)
     );
     initDefaultFilters().catch((err) =>
       console.error("Filter init error:", err)
     );
+    initOrderWorkers();
   }
 
   // eslint-disable-next-line no-undef

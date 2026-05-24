@@ -181,6 +181,7 @@ function normalizeVariants(product) {
         dimensions: currentOptions,
         price: product.price,
         image: product.main_image,
+        availability: product.availability,
         is_current_product: true,
       },
       product,
@@ -193,6 +194,7 @@ function normalizeVariant(variant, product) {
   const options = normalizeVariantOptions(variant.dimensions || variant.options || variant.attributes);
   const image = variant.image?.link || variant.image || variant.main_image?.link || variant.main_image || null;
   const price = variant.price?.value ?? variant.buybox_winner?.price?.value ?? null;
+  const availability = getVariantAvailabilityText(variant);
 
   return {
     asin: variant.asin,
@@ -200,8 +202,16 @@ function normalizeVariant(variant, product) {
     options,
     price,
     image,
+    availability,
     isCurrent: Boolean(variant.is_current_product || variant.asin === product.asin),
   };
+}
+
+function getVariantAvailabilityText(variant) {
+  const availability = variant.availability || variant.buybox_winner?.availability || null;
+  if (!availability) return null;
+  if (typeof availability === "string") return availability;
+  return availability.raw || availability.type || availability.message || null;
 }
 
 function normalizeVariantOptions(dimensions) {

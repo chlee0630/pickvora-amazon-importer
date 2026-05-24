@@ -94,13 +94,16 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
       variants: [{
         id: variantId,
         price: shopifyPrice.toFixed(2),
+        ...getVariantInventoryPayload({ asin: amazonData.asin }),
         metafields: [amazonAsinMetafield(amazonData.asin)],
       }],
     });
   }
 
   const images = safeParseJSON(amazonData.images, []);
-  if (images.length > 0) {
+  const productImages = uniqueImageUrls(images)
+    .filter((url) => !variantImport.uploadedImageUrls.includes(url));
+  if (productImages.length > 0) {
     await adminFetch(shop, accessToken, `
       mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
         productCreateMedia(productId: $productId, media: $media) {
@@ -109,7 +112,7 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
       }
     `, {
       productId,
-      media: images.slice(0, 10).map((url) => ({
+      media: productImages.slice(0, 10).map((url) => ({
         originalSource: url,
         mediaContentType: "IMAGE",
       })),
@@ -157,7 +160,11 @@ export async function updateShopifyProduct(shop, accessToken, shopifyProductId, 
       }
     `, {
       productId: shopifyProductId,
-      variants: [{ id: shopifyVariantId, price: shopifyPrice.toFixed(2) }],
+      variants: [{
+        id: shopifyVariantId,
+        price: shopifyPrice.toFixed(2),
+        ...getVariantInventoryPayload({ asin: amazonData.asin }),
+      }],
     });
   }
 
@@ -187,7 +194,10 @@ async function createShopifyVariants(shop, accessToken, productId, variants) {
   });
 
   const errors = res.data?.productVariantsBulkCreate?.userErrors;
-  if (errors?.length) throw new Error(errors.map((e) => e.message).join(", "));
+  if (errors?.length) {
+    console.error("Shopify variant creation errors:", errors);
+    throw new Error(errors.map((e) => e.message).join(", "));
+  }
 
   return res.data?.productVariantsBulkCreate?.productVariants || [];
 }
@@ -276,11 +286,13 @@ function calcPrice(amazonData, settings) {
 }
 
 function buildVariantImport(amazonData, settings) {
-  const variants = safeParseJSON(amazonData.variants, [])
-    .filter((variant) => variant.asin && Array.isArray(variant.options) && variant.options.length > 0);
+  const variants = dedupeVariants(
+    safeParseJSON(amazonData.variants, [])
+      .filter((variant) => variant.asin && Array.isArray(variant.options) && variant.options.length > 0),
+  );
 
   if (variants.length === 0) {
-    return { productOptions: [], variants: [] };
+    return { productOptions: [], variants: [], uploadedImageUrls: [] };
   }
 
   const optionNames = [];
@@ -293,7 +305,7 @@ function buildVariantImport(amazonData, settings) {
   });
 
   if (optionNames.length === 0) {
-    return { productOptions: [], variants: [] };
+    return { productOptions: [], variants: [], uploadedImageUrls: [] };
   }
 
   const productOptions = optionNames.map((name) => ({
@@ -301,11 +313,28 @@ function buildVariantImport(amazonData, settings) {
     values: uniqueOptionValues(variants, name).map((value) => ({ name: value })),
   }));
 
+  const uploadedImageUrls = [];
   const shopifyVariants = variants
-    .map((variant) => buildShopifyVariantInput(variant, optionNames, amazonData, settings))
+    .map((variant) => buildShopifyVariantInput(variant, optionNames, amazonData, settings, uploadedImageUrls))
     .filter(Boolean);
 
-  return { productOptions, variants: shopifyVariants };
+  return { productOptions, variants: shopifyVariants, uploadedImageUrls };
+}
+
+function dedupeVariants(variants) {
+  const seen = new Set();
+  return variants.filter((variant) => {
+    const optionKey = Array.isArray(variant.options)
+      ? variant.options.map((option) => `${option.name}:${option.value}`).join("|")
+      : "";
+    const key = `${variant.asin}|${optionKey}`;
+    if (seen.has(key)) {
+      console.warn("Duplicate Amazon variation skipped:", { asin: variant.asin, optionKey });
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function uniqueOptionValues(variants, optionName) {
@@ -315,7 +344,7 @@ function uniqueOptionValues(variants, optionName) {
   return [...new Set(values)];
 }
 
-function buildShopifyVariantInput(variant, optionNames, amazonData, settings) {
+function buildShopifyVariantInput(variant, optionNames, amazonData, settings, uploadedImageUrls) {
   const optionValues = optionNames.map((optionName) => {
     const value = getVariantOptionValue(variant, optionName);
     return value ? { optionName, name: value } : null;
@@ -327,11 +356,18 @@ function buildShopifyVariantInput(variant, optionNames, amazonData, settings) {
   const input = {
     price: variantPrice.toFixed(2),
     optionValues,
+    ...getVariantInventoryPayload(variant),
     metafields: [amazonAsinMetafield(variant.asin)],
   };
 
-  if (variant.image) {
-    input.mediaSrc = [variant.image];
+  const variantImage = getVariantImage(variant, amazonData);
+  if (variantImage) {
+    input.mediaSrc = [variantImage];
+    if (!uploadedImageUrls.includes(variantImage)) {
+      uploadedImageUrls.push(variantImage);
+    }
+  } else {
+    console.warn("Variant image mapping failed:", { asin: variant.asin });
   }
 
   return input;
@@ -339,7 +375,42 @@ function buildShopifyVariantInput(variant, optionNames, amazonData, settings) {
 
 function getVariantOptionValue(variant, optionName) {
   const option = variant.options.find((item) => item.name === optionName);
-  return option?.value ? String(option.value) : null;
+  const value = option?.value ? String(option.value).trim() : "";
+  return value || null;
+}
+
+function getVariantInventoryPayload(variant) {
+  const payload = {
+    inventoryPolicy: "CONTINUE",
+    inventoryItem: { tracked: false },
+  };
+
+  console.log("Shopify variant inventory configured:", {
+    asin: variant.asin,
+    inventoryPolicy: payload.inventoryPolicy,
+    tracked: payload.inventoryItem.tracked,
+    inventoryQuantitySync: false,
+  });
+
+  return payload;
+}
+
+function getVariantImage(variant, amazonData) {
+  const image = normalizeImageUrl(variant.image) || normalizeImageUrl(amazonData.mainImage);
+  if (!image) {
+    console.warn("Variant image mapping failed:", { asin: variant.asin, reason: "missing variation and parent image" });
+  }
+  return image;
+}
+
+function normalizeImageUrl(value) {
+  if (!value) return null;
+  if (typeof value === "string") return value.trim() || null;
+  return value.link || value.url || null;
+}
+
+function uniqueImageUrls(images) {
+  return [...new Set(images.map(normalizeImageUrl).filter(Boolean))];
 }
 
 function amazonAsinMetafield(asin) {

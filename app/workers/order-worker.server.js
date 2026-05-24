@@ -1,0 +1,285 @@
+import prisma from "../db.server.js";
+import {
+  claimNextOrderJob,
+  completeOrderJob,
+  failOrderJob,
+} from "../queues/order-queue.server.js";
+import { getOrderProvider } from "../services/order-providers/index.server.js";
+import { fetchShopifyOrder } from "../services/shopify-orders.server.js";
+
+const JOB_TIMEOUT_MS = 45000;
+const ORDER_LOCK_TTL_MS = 10 * 60 * 1000;
+
+let workerRunning = false;
+
+class PermanentOrderError extends Error {}
+
+export async function runOrderWorkerOnce() {
+  if (workerRunning) return;
+  workerRunning = true;
+
+  try {
+    let job = await claimNextOrderJob();
+    while (job) {
+      try {
+        if (job.type !== "order.create") {
+          throw new PermanentOrderError(`Unsupported order job type: ${job.type}`);
+        }
+
+        await withTimeout(processCreateOrderJob(job), JOB_TIMEOUT_MS);
+        await completeOrderJob(job.id);
+      } catch (err) {
+        logWorkerEvent("order_job_error", job, {
+          error: err.message,
+          retryable: isRetryableError(err),
+        });
+
+        await releaseProviderOrderLock(job, err);
+        await failOrderJob(job, err, { retryable: isRetryableError(err) });
+      }
+
+      job = await claimNextOrderJob();
+    }
+  } finally {
+    workerRunning = false;
+  }
+}
+
+export function initOrderWorkers() {
+  // eslint-disable-next-line no-undef
+  const g = globalThis;
+  if (g.__orderWorkerInterval) return;
+
+  g.__orderWorkerInterval = setInterval(() => {
+    runOrderWorkerOnce().catch((err) => console.error("Order worker interval error:", err));
+  }, 60 * 1000);
+
+  runOrderWorkerOnce().catch((err) => console.error("Order worker init error:", err));
+}
+
+async function processCreateOrderJob(job) {
+  const providerOrder = await acquireProviderOrderLock(job);
+  if (!providerOrder) {
+    logWorkerEvent("order_processing_lock_busy", job);
+    throw retryableError("Order processing lock is held by another worker", "LOCKED");
+  }
+
+  if (providerOrder.providerOrderId) {
+    logWorkerEvent("provider_order_duplicate_skipped", job, {
+      providerOrderId: providerOrder.providerOrderId,
+    });
+    return;
+  }
+
+  const session = await getOfflineSession(job.shop);
+  const order = await fetchShopifyOrder(job.shop, session.accessToken, job.shopifyOrderId);
+  validateOrder(order);
+
+  const orderInput = await buildProviderOrderInput(job.shop, order);
+  const provider = getOrderProvider(job.provider);
+  const result = await provider.createOrder(orderInput);
+
+  if (!result.providerOrderId) {
+    throw new Error("Provider did not return an order id");
+  }
+
+  await prisma.providerOrder.update({
+    where: { id: providerOrder.id },
+    data: {
+      providerOrderId: result.providerOrderId,
+      status: result.status || "submitted",
+      requestPayload: JSON.stringify(result.requestPayload || {}),
+      responsePayload: JSON.stringify(result.responsePayload || {}),
+      processingLockedAt: null,
+      lastError: null,
+    },
+  });
+
+  logWorkerEvent("provider_order_submitted", job, {
+    providerOrderId: result.providerOrderId,
+    providerStatus: result.status || "submitted",
+  });
+}
+
+async function acquireProviderOrderLock(job) {
+  const now = new Date();
+  const staleLock = new Date(Date.now() - ORDER_LOCK_TTL_MS);
+  const providerOrder = await prisma.providerOrder.upsert({
+    where: {
+      shop_shopifyOrderId_provider: {
+        shop: job.shop,
+        shopifyOrderId: job.shopifyOrderId,
+        provider: job.provider,
+      },
+    },
+    create: {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      status: "pending",
+    },
+    update: {},
+  });
+
+  if (providerOrder.providerOrderId) return providerOrder;
+
+  const claimed = await prisma.providerOrder.updateMany({
+    where: {
+      id: providerOrder.id,
+      providerOrderId: null,
+      OR: [
+        { processingLockedAt: null },
+        { processingLockedAt: { lt: staleLock } },
+        { status: { in: ["pending", "failed"] } },
+      ],
+    },
+    data: {
+      status: "processing",
+      processingLockedAt: now,
+      lastError: null,
+    },
+  });
+
+  if (claimed.count !== 1 && providerOrder.processingLockedAt) return null;
+  return prisma.providerOrder.findUnique({ where: { id: providerOrder.id } });
+}
+
+async function releaseProviderOrderLock(job, error) {
+  const message = error?.message || String(error);
+  const retryable = isRetryableError(error);
+  await prisma.providerOrder.updateMany({
+    where: {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      providerOrderId: null,
+    },
+    data: {
+      status: retryable ? "pending" : "failed",
+      processingLockedAt: null,
+      lastError: message.slice(0, 1000),
+    },
+  });
+}
+
+async function getOfflineSession(shop) {
+  const session = await prisma.session.findFirst({ where: { shop, isOnline: false } });
+  if (!session?.accessToken) throw retryableError(`No offline access token found for ${shop}`);
+  return session;
+}
+
+function validateOrder(order) {
+  if (!order) throw new PermanentOrderError("Shopify order not found");
+  if (order.cancelledAt) throw new PermanentOrderError("Shopify order is cancelled");
+  if (order.displayFulfillmentStatus === "FULFILLED") {
+    throw new PermanentOrderError("Shopify order is already fulfilled");
+  }
+}
+
+async function buildProviderOrderInput(shop, order) {
+  const shippingAddress = buildZincAddress(order.shippingAddress);
+  if (!shippingAddress) throw new PermanentOrderError("Order shipping address is incomplete");
+
+  const items = await mapOrderItemsToAsins(shop, order);
+  if (items.length === 0) {
+    throw new PermanentOrderError("No imported Amazon ASIN line items found on order");
+  }
+
+  return {
+    shop,
+    shopifyOrderId: order.id,
+    orderName: order.name,
+    shippingAddress,
+    items,
+  };
+}
+
+async function mapOrderItemsToAsins(shop, order) {
+  const lineItems = order.lineItems?.nodes || [];
+  const variantIds = lineItems.map((line) => line.variant?.id).filter(Boolean);
+  const productIds = lineItems.map((line) => line.product?.id).filter(Boolean);
+  const skuAsins = lineItems.map((line) => normalizeAsin(line.sku)).filter(Boolean);
+
+  const importedProducts = await prisma.amazonProduct.findMany({
+    where: {
+      OR: [
+        { shopifyVariantId: { in: variantIds } },
+        { shopifyProductId: { in: productIds } },
+        { asin: { in: skuAsins } },
+      ],
+    },
+  });
+
+  return lineItems
+    .map((line) => {
+      const asin = normalizeAsin(line.sku)
+        || normalizeAsin(line.variant?.metafield?.value)
+        || importedProducts.find((product) => product.shopifyVariantId === line.variant?.id)?.asin
+        || importedProducts.find((product) => product.shopifyProductId === line.product?.id)?.asin;
+      if (!asin) return null;
+      return {
+        asin,
+        quantity: line.quantity,
+        shopifyLineItemId: line.id,
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildZincAddress(address) {
+  if (!address?.address1 || !address.city || !address.zip || !address.countryCodeV2) return null;
+  return {
+    first_name: address.firstName || "Customer",
+    last_name: address.lastName || "Order",
+    address_line1: address.address1,
+    address_line2: address.address2 || undefined,
+    city: address.city,
+    state: address.provinceCode || "",
+    zip_code: address.zip,
+    country: address.countryCodeV2,
+    phone_number: address.phone || undefined,
+  };
+}
+
+function normalizeAsin(value) {
+  const text = String(value || "").trim().toUpperCase();
+  return /^[A-Z0-9]{10}$/.test(text) ? text : null;
+}
+
+function withTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(retryableError("Order job timed out", "TIMEOUT")), timeoutMs);
+    }),
+  ]);
+}
+
+function retryableError(message, code = "RETRYABLE") {
+  const error = new Error(message);
+  error.retryable = true;
+  error.code = code;
+  return error;
+}
+
+function isRetryableError(error) {
+  if (error instanceof PermanentOrderError) return false;
+  if (error?.retryable) return true;
+  if (["AbortError", "TimeoutError"].includes(error?.name)) return true;
+  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "TIMEOUT"].includes(error?.code)) return true;
+  return [429, 500, 502, 503].includes(Number(error?.status || error?.statusCode));
+}
+
+function logWorkerEvent(event, job, details = {}) {
+  console.log(JSON.stringify({
+    event,
+    layer: "order_worker",
+    jobId: job.id,
+    shop: job.shop,
+    type: job.type,
+    shopifyOrderId: job.shopifyOrderId,
+    provider: job.provider,
+    attempts: job.attempts,
+    ...details,
+  }));
+}
