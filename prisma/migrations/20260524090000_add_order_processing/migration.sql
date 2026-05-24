@@ -41,10 +41,29 @@ CREATE TABLE "ProviderOrder" (
     "status" TEXT NOT NULL DEFAULT 'pending',
     "requestPayload" TEXT,
     "responsePayload" TEXT,
+    "trackingNumber" TEXT,
+    "trackingCarrier" TEXT,
+    "trackingUrl" TEXT,
+    "trackingReceivedAt" DATETIME,
     "processingLockedAt" DATETIME,
     "lastError" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE "TrackingLog" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "shop" TEXT NOT NULL,
+    "shopifyOrderId" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
+    "providerOrderId" TEXT NOT NULL,
+    "trackingNumber" TEXT NOT NULL,
+    "carrier" TEXT NOT NULL,
+    "trackingUrl" TEXT,
+    "status" TEXT NOT NULL,
+    "payload" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- CreateIndex
@@ -67,3 +86,9 @@ CREATE INDEX "ProviderOrder_provider_providerOrderId_idx" ON "ProviderOrder"("pr
 
 -- CreateIndex
 CREATE INDEX "ProviderOrder_status_processingLockedAt_idx" ON "ProviderOrder"("status", "processingLockedAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "TrackingLog_shop_shopifyOrderId_provider_trackingNumber_carrier_key" ON "TrackingLog"("shop", "shopifyOrderId", "provider", "trackingNumber", "carrier");
+
+-- CreateIndex
+CREATE INDEX "TrackingLog_shop_shopifyOrderId_idx" ON "TrackingLog"("shop", "shopifyOrderId");

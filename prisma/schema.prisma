@@ -178,6 +178,10 @@ model ProviderOrder {
   status            String    @default("pending")
   requestPayload    String?
   responsePayload   String?
+  trackingNumber    String?
+  trackingCarrier   String?
+  trackingUrl       String?
+  trackingReceivedAt DateTime?
   processingLockedAt DateTime?
   lastError         String?
   createdAt         DateTime  @default(now())
@@ -186,4 +190,21 @@ model ProviderOrder {
   @@unique([shop, shopifyOrderId, provider])
   @@index([provider, providerOrderId])
   @@index([status, processingLockedAt])
+}
+
+model TrackingLog {
+  id              String   @id @default(cuid())
+  shop            String
+  shopifyOrderId  String
+  provider        String
+  providerOrderId String
+  trackingNumber  String
+  carrier         String
+  trackingUrl     String?
+  status          String
+  payload         String?
+  createdAt       DateTime @default(now())
+
+  @@unique([shop, shopifyOrderId, provider, trackingNumber, carrier])
+  @@index([shop, shopifyOrderId])
 }

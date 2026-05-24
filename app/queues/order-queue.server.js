@@ -1,6 +1,8 @@
 import prisma from "../db.server.js";
 
 const DEFAULT_MAX_ATTEMPTS = 5;
+const TRACKING_MAX_ATTEMPTS = 20;
+const TRACKING_POLL_INTERVAL_MS = 30 * 60 * 1000;
 
 export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload, provider = "zinc" }) {
   const job = await prisma.orderQueueJob.upsert({
@@ -31,11 +33,81 @@ export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload,
   return job;
 }
 
-export async function claimNextOrderJob() {
+export async function enqueueTrackingPollJob({
+  shop,
+  shopifyOrderId,
+  provider = "zinc",
+  delayMs = TRACKING_POLL_INTERVAL_MS,
+}) {
+  const runAt = new Date(Date.now() + delayMs);
+  const job = await prisma.orderQueueJob.upsert({
+    where: {
+      shop_type_shopifyOrderId: {
+        shop,
+        type: "tracking.poll",
+        shopifyOrderId,
+      },
+    },
+    create: {
+      shop,
+      type: "tracking.poll",
+      shopifyOrderId,
+      provider,
+      runAt,
+      maxAttempts: TRACKING_MAX_ATTEMPTS,
+    },
+    update: {
+      status: "pending",
+      runAt,
+      lockedAt: null,
+      completedAt: null,
+      lastError: null,
+    },
+  });
+
+  scheduleTrackingWorkerRun(delayMs);
+  return job;
+}
+
+export async function enqueueFulfillmentUpdateJob({ shop, shopifyOrderId, provider = "zinc", payload }) {
+  const job = await prisma.orderQueueJob.upsert({
+    where: {
+      shop_type_shopifyOrderId: {
+        shop,
+        type: "fulfillment.update",
+        shopifyOrderId,
+      },
+    },
+    create: {
+      shop,
+      type: "fulfillment.update",
+      shopifyOrderId,
+      provider,
+      payload: JSON.stringify(payload || {}),
+      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+    },
+    update: {
+      payload: JSON.stringify(payload || {}),
+      lastError: null,
+    },
+  });
+
+  logQueueEvent("fulfillment_update_job_enqueued", {
+    jobId: job.id,
+    shop,
+    type: job.type,
+    shopifyOrderId,
+    provider,
+  });
+  return job;
+}
+
+export async function claimNextOrderJob({ types = ["order.create"] } = {}) {
   const now = new Date();
   const staleLock = new Date(Date.now() - 10 * 60 * 1000);
   const job = await prisma.orderQueueJob.findFirst({
     where: {
+      type: { in: types },
       OR: [
         { status: "pending", runAt: { lte: now } },
         { status: "processing", lockedAt: { lt: staleLock } },
@@ -49,6 +121,7 @@ export async function claimNextOrderJob() {
   const claimed = await prisma.orderQueueJob.updateMany({
     where: {
       id: job.id,
+      type: { in: types },
       OR: [
         { status: "pending" },
         { status: "processing", lockedAt: { lt: staleLock } },
@@ -113,6 +186,20 @@ export function scheduleOrderWorkerRun(delayMs = 0) {
     import("../workers/order-worker.server.js")
       .then(({ runOrderWorkerOnce }) => runOrderWorkerOnce())
       .catch((err) => console.error("Order worker schedule error:", err));
+  };
+
+  if (delayMs > 0) {
+    setTimeout(run, delayMs);
+  } else {
+    setTimeout(run, 0);
+  }
+}
+
+export function scheduleTrackingWorkerRun(delayMs = 0) {
+  const run = () => {
+    import("../workers/tracking-polling-worker.server.js")
+      .then(({ runTrackingPollingWorkerOnce }) => runTrackingPollingWorkerOnce())
+      .catch((err) => console.error("Tracking worker schedule error:", err));
   };
 
   if (delayMs > 0) {

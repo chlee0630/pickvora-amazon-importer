@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import { initAllSchedulers } from "../services/scheduler.server";
 import { initDefaultFilters } from "../services/filter.server";
 import { initOrderWorkers } from "../workers/order-worker.server";
+import { initTrackingPollingWorkers } from "../workers/tracking-polling-worker.server";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -21,6 +22,7 @@ export const loader = async ({ request }) => {
       console.error("Filter init error:", err)
     );
     initOrderWorkers();
+    initTrackingPollingWorkers();
   }
 
   // eslint-disable-next-line no-undef

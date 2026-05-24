@@ -3,6 +3,7 @@ import {
   claimNextOrderJob,
   completeOrderJob,
   failOrderJob,
+  enqueueTrackingPollJob,
 } from "../queues/order-queue.server.js";
 import { getOrderProvider } from "../services/order-providers/index.server.js";
 import { fetchShopifyOrder } from "../services/shopify-orders.server.js";
@@ -19,7 +20,7 @@ export async function runOrderWorkerOnce() {
   workerRunning = true;
 
   try {
-    let job = await claimNextOrderJob();
+    let job = await claimNextOrderJob({ types: ["order.create"] });
     while (job) {
       try {
         if (job.type !== "order.create") {
@@ -38,7 +39,7 @@ export async function runOrderWorkerOnce() {
         await failOrderJob(job, err, { retryable: isRetryableError(err) });
       }
 
-      job = await claimNextOrderJob();
+      job = await claimNextOrderJob({ types: ["order.create"] });
     }
   } finally {
     workerRunning = false;
@@ -87,7 +88,7 @@ async function processCreateOrderJob(job) {
     where: { id: providerOrder.id },
     data: {
       providerOrderId: result.providerOrderId,
-      status: result.status || "submitted",
+      status: "ZINC_SUBMITTED",
       requestPayload: JSON.stringify(result.requestPayload || {}),
       responsePayload: JSON.stringify(result.responsePayload || {}),
       processingLockedAt: null,
@@ -98,6 +99,12 @@ async function processCreateOrderJob(job) {
   logWorkerEvent("provider_order_submitted", job, {
     providerOrderId: result.providerOrderId,
     providerStatus: result.status || "submitted",
+  });
+
+  await enqueueTrackingPollJob({
+    shop: job.shop,
+    shopifyOrderId: job.shopifyOrderId,
+    provider: job.provider,
   });
 }
 
