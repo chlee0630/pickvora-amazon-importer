@@ -182,6 +182,8 @@ model ProviderOrder {
   trackingCarrier   String?
   trackingUrl       String?
   trackingReceivedAt DateTime?
+  fulfillmentSyncedAt DateTime?
+  shopifyFulfillmentId String?
   processingLockedAt DateTime?
   lastError         String?
   createdAt         DateTime  @default(now())
@@ -204,6 +206,26 @@ model TrackingLog {
   status          String
   payload         String?
   createdAt       DateTime @default(now())
+
+  @@unique([shop, shopifyOrderId, provider, trackingNumber, carrier])
+  @@index([shop, shopifyOrderId])
+}
+
+model FulfillmentLog {
+  id                 String   @id @default(cuid())
+  shop               String
+  shopifyOrderId     String
+  provider           String
+  providerOrderId    String?
+  shopifyFulfillmentId String?
+  trackingNumber     String
+  carrier            String
+  trackingUrl        String?
+  status             String
+  requestPayload     String?
+  responsePayload    String?
+  message            String?
+  createdAt          DateTime @default(now())
 
   @@unique([shop, shopifyOrderId, provider, trackingNumber, carrier])
   @@index([shop, shopifyOrderId])

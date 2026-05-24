@@ -45,6 +45,8 @@ CREATE TABLE "ProviderOrder" (
     "trackingCarrier" TEXT,
     "trackingUrl" TEXT,
     "trackingReceivedAt" DATETIME,
+    "fulfillmentSyncedAt" DATETIME,
+    "shopifyFulfillmentId" TEXT,
     "processingLockedAt" DATETIME,
     "lastError" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -63,6 +65,24 @@ CREATE TABLE "TrackingLog" (
     "trackingUrl" TEXT,
     "status" TEXT NOT NULL,
     "payload" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- CreateTable
+CREATE TABLE "FulfillmentLog" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "shop" TEXT NOT NULL,
+    "shopifyOrderId" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
+    "providerOrderId" TEXT,
+    "shopifyFulfillmentId" TEXT,
+    "trackingNumber" TEXT NOT NULL,
+    "carrier" TEXT NOT NULL,
+    "trackingUrl" TEXT,
+    "status" TEXT NOT NULL,
+    "requestPayload" TEXT,
+    "responsePayload" TEXT,
+    "message" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -92,3 +112,9 @@ CREATE UNIQUE INDEX "TrackingLog_shop_shopifyOrderId_provider_trackingNumber_car
 
 -- CreateIndex
 CREATE INDEX "TrackingLog_shop_shopifyOrderId_idx" ON "TrackingLog"("shop", "shopifyOrderId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "FulfillmentLog_shop_shopifyOrderId_provider_trackingNumber_carrier_key" ON "FulfillmentLog"("shop", "shopifyOrderId", "provider", "trackingNumber", "carrier");
+
+-- CreateIndex
+CREATE INDEX "FulfillmentLog_shop_shopifyOrderId_idx" ON "FulfillmentLog"("shop", "shopifyOrderId");

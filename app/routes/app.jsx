@@ -6,6 +6,7 @@ import { initAllSchedulers } from "../services/scheduler.server";
 import { initDefaultFilters } from "../services/filter.server";
 import { initOrderWorkers } from "../workers/order-worker.server";
 import { initTrackingPollingWorkers } from "../workers/tracking-polling-worker.server";
+import { initFulfillmentUpdateWorkers } from "../workers/fulfillment-update-worker.server";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -23,6 +24,7 @@ export const loader = async ({ request }) => {
     );
     initOrderWorkers();
     initTrackingPollingWorkers();
+    initFulfillmentUpdateWorkers();
   }
 
   // eslint-disable-next-line no-undef

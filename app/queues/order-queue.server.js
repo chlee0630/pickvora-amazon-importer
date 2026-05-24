@@ -87,7 +87,10 @@ export async function enqueueFulfillmentUpdateJob({ shop, shopifyOrderId, provid
       maxAttempts: DEFAULT_MAX_ATTEMPTS,
     },
     update: {
+      status: "pending",
       payload: JSON.stringify(payload || {}),
+      lockedAt: null,
+      completedAt: null,
       lastError: null,
     },
   });
@@ -99,6 +102,7 @@ export async function enqueueFulfillmentUpdateJob({ shop, shopifyOrderId, provid
     shopifyOrderId,
     provider,
   });
+  scheduleFulfillmentWorkerRun();
   return job;
 }
 
@@ -178,7 +182,7 @@ export async function failOrderJob(job, error, { retryable = true } = {}) {
     error: message,
   });
 
-  if (!exhausted) scheduleOrderWorkerRun(delayMs);
+  if (!exhausted) scheduleWorkerForJobType(job.type, delayMs);
 }
 
 export function scheduleOrderWorkerRun(delayMs = 0) {
@@ -206,6 +210,30 @@ export function scheduleTrackingWorkerRun(delayMs = 0) {
     setTimeout(run, delayMs);
   } else {
     setTimeout(run, 0);
+  }
+}
+
+export function scheduleFulfillmentWorkerRun(delayMs = 0) {
+  const run = () => {
+    import("../workers/fulfillment-update-worker.server.js")
+      .then(({ runFulfillmentUpdateWorkerOnce }) => runFulfillmentUpdateWorkerOnce())
+      .catch((err) => console.error("Fulfillment worker schedule error:", err));
+  };
+
+  if (delayMs > 0) {
+    setTimeout(run, delayMs);
+  } else {
+    setTimeout(run, 0);
+  }
+}
+
+function scheduleWorkerForJobType(type, delayMs) {
+  if (type === "tracking.poll") {
+    scheduleTrackingWorkerRun(delayMs);
+  } else if (type === "fulfillment.update") {
+    scheduleFulfillmentWorkerRun(delayMs);
+  } else {
+    scheduleOrderWorkerRun(delayMs);
   }
 }
 
