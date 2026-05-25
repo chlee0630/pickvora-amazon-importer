@@ -8,6 +8,7 @@ const RETRY_SPIKE_WINDOW_MS = 5 * 60 * 1000;
 const RETRY_SPIKE_THRESHOLD = 10;
 const PERSISTENT_EVENT_TYPES = new Set([
   "api_failure",
+  "api_success",
   "api_timeout",
   "dlq_inserted",
   "dlq_replay_attempt",
@@ -15,6 +16,7 @@ const PERSISTENT_EVENT_TYPES = new Set([
   "retry_exhausted",
   "retry_spike",
   "worker_failure",
+  "worker_success",
   "worker_timeout",
   "worker_crash_recovery",
   "fulfillment_failure",

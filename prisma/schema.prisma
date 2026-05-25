@@ -220,6 +220,38 @@ model MonitoringEvent {
   @@index([shop, createdAt])
 }
 
+model AnalyticsSummary {
+  id            String   @id @default(cuid())
+  metricName    String
+  bucketStart   DateTime
+  bucketEnd     DateTime
+  dimensionsKey String   @default("{}")
+  dimensions    String?
+  value         Float
+  count         Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([metricName, bucketStart, dimensionsKey])
+  @@index([metricName, bucketStart])
+  @@index([bucketStart, bucketEnd])
+}
+
+model AnalyticsAggregationRun {
+  id           String   @id @default(cuid())
+  bucketStart  DateTime
+  bucketEnd    DateTime
+  status       String
+  summaryCount Int      @default(0)
+  durationMs   Int?
+  error        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([bucketStart, bucketEnd])
+  @@index([status, bucketEnd])
+}
+
 model ProviderOrder {
   id                String    @id @default(cuid())
   shop              String

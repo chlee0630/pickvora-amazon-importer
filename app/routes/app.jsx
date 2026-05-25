@@ -7,6 +7,7 @@ import { initDefaultFilters } from "../services/filter.server";
 import { initOrderWorkers } from "../workers/order-worker.server";
 import { initTrackingPollingWorkers } from "../workers/tracking-polling-worker.server";
 import { initFulfillmentUpdateWorkers } from "../workers/fulfillment-update-worker.server";
+import { initAnalyticsAggregation } from "../services/analytics/analytics-service.server";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -25,6 +26,7 @@ export const loader = async ({ request }) => {
     initOrderWorkers();
     initTrackingPollingWorkers();
     initFulfillmentUpdateWorkers();
+    initAnalyticsAggregation();
   }
 
   // eslint-disable-next-line no-undef
