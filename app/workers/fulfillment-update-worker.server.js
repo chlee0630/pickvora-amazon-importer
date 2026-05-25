@@ -10,6 +10,7 @@ import {
   fetchFulfillmentContext,
   hasMatchingFulfillment,
 } from "../services/shopify-fulfillments.server.js";
+import { classifyFailure } from "../utils/failure-classifier.server.js";
 
 const JOB_TIMEOUT_MS = 30000;
 const FULFILLMENT_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -304,10 +305,7 @@ function retryableError(message, code = "RETRYABLE") {
 
 function isRetryableError(error) {
   if (error instanceof PermanentFulfillmentError) return false;
-  if (error?.retryable) return true;
-  if (["AbortError", "TimeoutError"].includes(error?.name)) return true;
-  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "TIMEOUT"].includes(error?.code)) return true;
-  return [429, 500, 502, 503].includes(Number(error?.status || error?.statusCode));
+  return classifyFailure(error).retryable;
 }
 
 function maskPayload(value) {

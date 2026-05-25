@@ -162,11 +162,43 @@ model OrderQueueJob {
   lockedAt        DateTime?
   completedAt     DateTime?
   lastError       String?
+  retryHistory    String?
+  failureReason   String?
+  failureCategory String?
+  dlqStatus       String?
+  recoveryAttempts Int      @default(0)
+  lastFailureAt   DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   @@unique([shop, type, shopifyOrderId])
   @@index([status, runAt])
+  @@index([dlqStatus])
+}
+
+model DeadLetterQueueJob {
+  id              String    @id @default(cuid())
+  originalJobId   String    @unique
+  shop            String
+  type            String
+  shopifyOrderId  String
+  provider        String    @default("zinc")
+  status          String    @default("open")
+  originalPayload String?
+  retryHistory    String?
+  failureCategory String
+  failureReason   String
+  attempts        Int
+  maxAttempts     Int
+  recoveryAttempts Int      @default(0)
+  recoveryNote    String?
+  lastFailureAt   DateTime
+  recoveredAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status, lastFailureAt])
+  @@index([shop, shopifyOrderId])
 }
 
 model ProviderOrder {

@@ -7,6 +7,7 @@ import {
   failOrderJob,
 } from "../queues/order-queue.server.js";
 import { getOrderProvider } from "../services/order-providers/index.server.js";
+import { classifyFailure } from "../utils/failure-classifier.server.js";
 
 const JOB_TIMEOUT_MS = 30000;
 const POLLING_INTERVAL_MS = 30 * 60 * 1000;
@@ -305,10 +306,7 @@ function retryableError(message, code = "RETRYABLE") {
 
 function isRetryableError(error) {
   if (error instanceof PermanentTrackingError) return false;
-  if (error?.retryable) return true;
-  if (["AbortError", "TimeoutError"].includes(error?.name)) return true;
-  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "TIMEOUT"].includes(error?.code)) return true;
-  return [429, 500, 502, 503].includes(Number(error?.status || error?.statusCode));
+  return classifyFailure(error).retryable;
 }
 
 function logTrackingEvent(event, job, details = {}) {

@@ -1,8 +1,12 @@
 import prisma from "../db.server.js";
+import { moveJobToDeadLetterQueue, appendRetryHistory } from "./dead-letter-queue.server.js";
+import { classifyFailure, getFailureMessage } from "../utils/failure-classifier.server.js";
+import { logFailureAudit } from "../utils/failure-audit-log.server.js";
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 const TRACKING_MAX_ATTEMPTS = 20;
 const TRACKING_POLL_INTERVAL_MS = 30 * 60 * 1000;
+const STALE_LOCK_MS = 10 * 60 * 1000;
 
 export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload, provider = "zinc" }) {
   const job = await prisma.orderQueueJob.upsert({
@@ -24,7 +28,13 @@ export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload,
     update: {
       status: "pending",
       payload: JSON.stringify(payload || {}),
+      attempts: 0,
       lastError: null,
+      retryHistory: null,
+      failureReason: null,
+      failureCategory: null,
+      dlqStatus: null,
+      lastFailureAt: null,
       runAt: new Date(),
     },
   });
@@ -62,6 +72,10 @@ export async function enqueueTrackingPollJob({
       lockedAt: null,
       completedAt: null,
       lastError: null,
+      failureReason: null,
+      failureCategory: null,
+      dlqStatus: null,
+      lastFailureAt: null,
     },
   });
 
@@ -89,9 +103,15 @@ export async function enqueueFulfillmentUpdateJob({ shop, shopifyOrderId, provid
     update: {
       status: "pending",
       payload: JSON.stringify(payload || {}),
+      attempts: 0,
       lockedAt: null,
       completedAt: null,
       lastError: null,
+      retryHistory: null,
+      failureReason: null,
+      failureCategory: null,
+      dlqStatus: null,
+      lastFailureAt: null,
     },
   });
 
@@ -108,7 +128,7 @@ export async function enqueueFulfillmentUpdateJob({ shop, shopifyOrderId, provid
 
 export async function claimNextOrderJob({ types = ["order.create"] } = {}) {
   const now = new Date();
-  const staleLock = new Date(Date.now() - 10 * 60 * 1000);
+  const staleLock = new Date(Date.now() - STALE_LOCK_MS);
   const job = await prisma.orderQueueJob.findFirst({
     where: {
       type: { in: types },
@@ -121,6 +141,8 @@ export async function claimNextOrderJob({ types = ["order.create"] } = {}) {
   });
 
   if (!job) return null;
+
+  const recoveringStaleJob = job.status === "processing" && job.lockedAt && job.lockedAt < staleLock;
 
   const claimed = await prisma.orderQueueJob.updateMany({
     where: {
@@ -139,6 +161,18 @@ export async function claimNextOrderJob({ types = ["order.create"] } = {}) {
   });
 
   if (claimed.count !== 1) return null;
+
+  if (recoveringStaleJob) {
+    logFailureAudit("worker_crash_recovery_claimed", {
+      jobId: job.id,
+      shop: job.shop,
+      type: job.type,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      lockedAt: job.lockedAt,
+    });
+  }
+
   return prisma.orderQueueJob.findUnique({ where: { id: job.id } });
 }
 
@@ -150,34 +184,80 @@ export async function completeOrderJob(jobId) {
       completedAt: new Date(),
       lockedAt: null,
       lastError: null,
+      failureReason: null,
+      failureCategory: null,
+      dlqStatus: null,
     },
   });
 }
 
 export async function failOrderJob(job, error, { retryable = true } = {}) {
-  const message = error?.message || String(error);
+  const failure = classifyFailure(error, { retryable });
+  const message = getFailureMessage(error);
   const attempts = job.attempts;
-  const exhausted = !retryable || attempts >= job.maxAttempts;
+  const exhausted = !failure.retryable || attempts >= job.maxAttempts;
   const delayMs = getBackoffDelayMs(attempts);
-
-  await prisma.orderQueueJob.update({
-    where: { id: job.id },
-    data: {
-      status: exhausted ? "failed" : "pending",
-      lockedAt: null,
-      runAt: exhausted ? job.runAt : new Date(Date.now() + delayMs),
-      lastError: message.slice(0, 1000),
-    },
+  const retryHistory = appendRetryHistory(job.retryHistory, {
+    attempt: attempts,
+    maxAttempts: job.maxAttempts,
+    category: failure.category,
+    retryable: failure.retryable,
+    reason: failure.reason,
+    code: failure.code,
+    status: failure.status,
+    failedAt: new Date().toISOString(),
+    nextRunAt: exhausted ? null : new Date(Date.now() + delayMs).toISOString(),
   });
 
-  logQueueEvent(exhausted ? "order_job_failed" : "order_job_retry_scheduled", {
+  const jobUpdate = {
+    status: exhausted ? "failed" : "pending",
+    lockedAt: null,
+    runAt: exhausted ? job.runAt : new Date(Date.now() + delayMs),
+    lastError: message.slice(0, 1000),
+    failureReason: failure.reason,
+    failureCategory: failure.category,
+    retryHistory: JSON.stringify(retryHistory),
+    lastFailureAt: new Date(),
+    dlqStatus: exhausted ? "open" : null,
+  };
+
+  if (exhausted) {
+    await prisma.$transaction(async (tx) => {
+      await tx.orderQueueJob.update({
+        where: { id: job.id },
+        data: jobUpdate,
+      });
+      await moveJobToDeadLetterQueue({ ...job, retryHistory: JSON.stringify(retryHistory) }, failure, tx);
+    });
+  } else {
+    await prisma.orderQueueJob.update({
+      where: { id: job.id },
+      data: jobUpdate,
+    });
+  }
+
+  logFailureAudit("failure_classified", {
+    jobId: job.id,
+    shop: job.shop,
+    type: job.type,
+    shopifyOrderId: job.shopifyOrderId,
+    provider: job.provider,
+    attempts,
+    maxAttempts: job.maxAttempts,
+    failureCategory: failure.category,
+    retryable: failure.retryable,
+    failureReason: failure.reason,
+  });
+
+  logQueueEvent(exhausted ? "order_job_retry_exhausted" : "order_job_retry_scheduled", {
     jobId: job.id,
     shop: job.shop,
     type: job.type,
     shopifyOrderId: job.shopifyOrderId,
     attempts,
     maxAttempts: job.maxAttempts,
-    retryable,
+    retryable: failure.retryable,
+    failureCategory: failure.category,
     delayMs: exhausted ? 0 : delayMs,
     error: message,
   });
@@ -227,7 +307,7 @@ export function scheduleFulfillmentWorkerRun(delayMs = 0) {
   }
 }
 
-function scheduleWorkerForJobType(type, delayMs) {
+export function scheduleWorkerForJobType(type, delayMs = 0) {
   if (type === "tracking.poll") {
     scheduleTrackingWorkerRun(delayMs);
   } else if (type === "fulfillment.update") {
@@ -238,7 +318,8 @@ function scheduleWorkerForJobType(type, delayMs) {
 }
 
 function getBackoffDelayMs(attempts) {
-  return Math.min(60 * 60 * 1000, 2 ** Math.max(attempts - 1, 0) * 60 * 1000);
+  const delays = [0, 30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000, 30 * 60 * 1000];
+  return delays[Math.min(Math.max(attempts, 1), delays.length - 1)];
 }
 
 function logQueueEvent(event, details) {

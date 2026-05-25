@@ -7,6 +7,7 @@ import {
 } from "../queues/order-queue.server.js";
 import { getOrderProvider } from "../services/order-providers/index.server.js";
 import { fetchShopifyOrder } from "../services/shopify-orders.server.js";
+import { classifyFailure } from "../utils/failure-classifier.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
 const ORDER_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -162,7 +163,7 @@ async function releaseProviderOrderLock(job, error) {
       providerOrderId: null,
     },
     data: {
-      status: retryable ? "pending" : "failed",
+      status: retryable ? "pending" : "FAILED",
       processingLockedAt: null,
       lastError: message.slice(0, 1000),
     },
@@ -271,10 +272,7 @@ function retryableError(message, code = "RETRYABLE") {
 
 function isRetryableError(error) {
   if (error instanceof PermanentOrderError) return false;
-  if (error?.retryable) return true;
-  if (["AbortError", "TimeoutError"].includes(error?.name)) return true;
-  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "TIMEOUT"].includes(error?.code)) return true;
-  return [429, 500, 502, 503].includes(Number(error?.status || error?.statusCode));
+  return classifyFailure(error).retryable;
 }
 
 function logWorkerEvent(event, job, details = {}) {
