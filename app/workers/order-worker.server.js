@@ -8,6 +8,7 @@ import {
 import { getOrderProvider } from "../services/order-providers/index.server.js";
 import { fetchShopifyOrder } from "../services/shopify-orders.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
+import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
 const ORDER_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -24,12 +25,14 @@ export async function runOrderWorkerOnce() {
     let job = await claimNextOrderJob({ types: ["order.create"] });
     while (job) {
       try {
-        if (job.type !== "order.create") {
-          throw new PermanentOrderError(`Unsupported order job type: ${job.type}`);
-        }
+        await trackWorkerJob("order_worker", job, async () => {
+          if (job.type !== "order.create") {
+            throw new PermanentOrderError(`Unsupported order job type: ${job.type}`);
+          }
 
-        await withTimeout(processCreateOrderJob(job), JOB_TIMEOUT_MS);
-        await completeOrderJob(job.id);
+          await withTimeout(processCreateOrderJob(job), JOB_TIMEOUT_MS);
+          await completeOrderJob(job.id);
+        }, { timeoutMs: JOB_TIMEOUT_MS });
       } catch (err) {
         logWorkerEvent("order_job_error", job, {
           error: err.message,

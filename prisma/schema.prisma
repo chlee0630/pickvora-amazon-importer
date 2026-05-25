@@ -201,6 +201,25 @@ model DeadLetterQueueJob {
   @@index([shop, shopifyOrderId])
 }
 
+model MonitoringEvent {
+  id              String   @id @default(cuid())
+  eventType       String
+  severity        String   @default("info")
+  shop            String?
+  jobType         String?
+  workerName      String?
+  provider        String?
+  shopifyOrderId  String?
+  durationMs      Int?
+  count           Int?
+  payload         String?
+  createdAt       DateTime @default(now())
+
+  @@index([eventType, createdAt])
+  @@index([severity, createdAt])
+  @@index([shop, createdAt])
+}
+
 model ProviderOrder {
   id                String    @id @default(cuid())
   shop              String

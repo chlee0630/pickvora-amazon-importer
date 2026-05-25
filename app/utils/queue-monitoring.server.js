@@ -1,5 +1,6 @@
 import prisma from "../db.server.js";
 import { logFailureAudit } from "./failure-audit-log.server.js";
+import { recordMonitoringEvent } from "../services/monitoring/monitoring-service.server.js";
 
 export async function recoverStaleProcessingJobs({ olderThanMs = 10 * 60 * 1000, types } = {}) {
   const staleLock = new Date(Date.now() - olderThanMs);
@@ -21,6 +22,12 @@ export async function recoverStaleProcessingJobs({ olderThanMs = 10 * 60 * 1000,
       recoveredJobs: result.count,
       olderThanMs,
       types: types || "all",
+    });
+    recordMonitoringEvent("worker_crash_recovery", {
+      recoveredJobs: result.count,
+      olderThanMs,
+      types: types || "all",
+      count: result.count,
     });
   }
 

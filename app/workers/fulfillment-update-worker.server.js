@@ -11,6 +11,8 @@ import {
   hasMatchingFulfillment,
 } from "../services/shopify-fulfillments.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
+import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
+import { recordFulfillmentMetric } from "../services/monitoring/monitoring-service.server.js";
 
 const JOB_TIMEOUT_MS = 30000;
 const FULFILLMENT_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -27,9 +29,21 @@ export async function runFulfillmentUpdateWorkerOnce() {
     let job = await claimNextOrderJob({ types: ["fulfillment.update"] });
     while (job) {
       try {
-        await withTimeout(processFulfillmentJob(job), JOB_TIMEOUT_MS);
-        await completeOrderJob(job.id);
+        await trackWorkerJob("fulfillment_update_worker", job, async () => {
+          await withTimeout(processFulfillmentJob(job), JOB_TIMEOUT_MS);
+          await completeOrderJob(job.id);
+        }, { timeoutMs: JOB_TIMEOUT_MS });
       } catch (err) {
+        recordFulfillmentMetric("fulfillment_failure", {
+          jobId: job.id,
+          shop: job.shop,
+          type: job.type,
+          shopifyOrderId: job.shopifyOrderId,
+          provider: job.provider,
+          attempts: job.attempts,
+          error: err.message,
+          retryable: isRetryableError(err),
+        });
         logFulfillmentEvent("fulfillment_job_error", job, {
           error: err.message,
           retryable: isRetryableError(err),
@@ -76,6 +90,14 @@ async function processFulfillmentJob(job) {
 
   const existingLog = await findExistingFulfillmentLog(job, tracking);
   if (existingLog) {
+    recordFulfillmentMetric("fulfillment_duplicate_prevented", {
+      jobId: job.id,
+      shop: job.shop,
+      type: job.type,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      source: "local_log",
+    });
     logFulfillmentEvent("fulfillment_duplicate_log_skipped", job, {
       trackingNumber: tracking.trackingNumber,
       carrier: tracking.carrier,
@@ -90,6 +112,14 @@ async function processFulfillmentJob(job) {
   if (!order) throw new PermanentFulfillmentError("Shopify order not found");
 
   if (hasMatchingFulfillment(order, tracking)) {
+    recordFulfillmentMetric("fulfillment_duplicate_prevented", {
+      jobId: job.id,
+      shop: job.shop,
+      type: job.type,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      source: "shopify",
+    });
     await saveFulfillmentLog(job, providerOrder, tracking, {
       status: "duplicate",
       message: "Matching Shopify fulfillment already exists",
@@ -120,6 +150,14 @@ async function processFulfillmentJob(job) {
   });
 
   await markProviderOrderFulfilled(providerOrder.id, fulfillmentId);
+  recordFulfillmentMetric("fulfillment_success", {
+    jobId: job.id,
+    shop: job.shop,
+    type: job.type,
+    shopifyOrderId: job.shopifyOrderId,
+    provider: job.provider,
+    fulfillmentId,
+  });
 
   logFulfillmentEvent("fulfillment_response", job, {
     trackingNumber: tracking.trackingNumber,

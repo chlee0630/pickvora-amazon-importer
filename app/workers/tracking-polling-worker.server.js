@@ -8,6 +8,7 @@ import {
 } from "../queues/order-queue.server.js";
 import { getOrderProvider } from "../services/order-providers/index.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
+import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 
 const JOB_TIMEOUT_MS = 30000;
 const POLLING_INTERVAL_MS = 30 * 60 * 1000;
@@ -25,10 +26,12 @@ export async function runTrackingPollingWorkerOnce() {
     let job = await claimNextOrderJob({ types: ["tracking.poll"] });
     while (job) {
       try {
-        const shouldComplete = await withTimeout(processTrackingPollJob(job), JOB_TIMEOUT_MS);
-        if (shouldComplete !== false) {
-          await completeOrderJob(job.id);
-        }
+        await trackWorkerJob("tracking_polling_worker", job, async () => {
+          const shouldComplete = await withTimeout(processTrackingPollJob(job), JOB_TIMEOUT_MS);
+          if (shouldComplete !== false) {
+            await completeOrderJob(job.id);
+          }
+        }, { timeoutMs: JOB_TIMEOUT_MS });
       } catch (err) {
         logTrackingEvent("tracking_poll_error", job, {
           error: err.message,

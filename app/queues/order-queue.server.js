@@ -2,6 +2,8 @@ import prisma from "../db.server.js";
 import { moveJobToDeadLetterQueue, appendRetryHistory } from "./dead-letter-queue.server.js";
 import { classifyFailure, getFailureMessage } from "../utils/failure-classifier.server.js";
 import { logFailureAudit } from "../utils/failure-audit-log.server.js";
+import { scheduleQueueHealthCheck } from "../services/monitoring/queue-health.server.js";
+import { recordMonitoringEvent, recordRetryMetric } from "../services/monitoring/monitoring-service.server.js";
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 const TRACKING_MAX_ATTEMPTS = 20;
@@ -40,6 +42,7 @@ export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload,
   });
 
   scheduleOrderWorkerRun();
+  scheduleQueueHealthCheck();
   return job;
 }
 
@@ -80,6 +83,7 @@ export async function enqueueTrackingPollJob({
   });
 
   scheduleTrackingWorkerRun(delayMs);
+  scheduleQueueHealthCheck();
   return job;
 }
 
@@ -123,6 +127,7 @@ export async function enqueueFulfillmentUpdateJob({ shop, shopifyOrderId, provid
     provider,
   });
   scheduleFulfillmentWorkerRun();
+  scheduleQueueHealthCheck();
   return job;
 }
 
@@ -164,6 +169,14 @@ export async function claimNextOrderJob({ types = ["order.create"] } = {}) {
 
   if (recoveringStaleJob) {
     logFailureAudit("worker_crash_recovery_claimed", {
+      jobId: job.id,
+      shop: job.shop,
+      type: job.type,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      lockedAt: job.lockedAt,
+    });
+    recordMonitoringEvent("worker_crash_recovery", {
       jobId: job.id,
       shop: job.shop,
       type: job.type,
@@ -249,6 +262,34 @@ export async function failOrderJob(job, error, { retryable = true } = {}) {
     failureReason: failure.reason,
   });
 
+  if (exhausted) {
+    recordMonitoringEvent("retry_exhausted", {
+      jobId: job.id,
+      shop: job.shop,
+      type: job.type,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      attempts,
+      maxAttempts: job.maxAttempts,
+      retryable: failure.retryable,
+      failureCategory: failure.category,
+      failureReason: failure.reason,
+    });
+  } else {
+    recordRetryMetric({
+      jobId: job.id,
+      shop: job.shop,
+      type: job.type,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      attempts,
+      maxAttempts: job.maxAttempts,
+      failureCategory: failure.category,
+      retryable: failure.retryable,
+      delayMs,
+    });
+  }
+
   logQueueEvent(exhausted ? "order_job_retry_exhausted" : "order_job_retry_scheduled", {
     jobId: job.id,
     shop: job.shop,
@@ -263,6 +304,7 @@ export async function failOrderJob(job, error, { retryable = true } = {}) {
   });
 
   if (!exhausted) scheduleWorkerForJobType(job.type, delayMs);
+  scheduleQueueHealthCheck();
 }
 
 export function scheduleOrderWorkerRun(delayMs = 0) {

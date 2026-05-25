@@ -1,6 +1,7 @@
 import prisma from "../db.server.js";
 import { scheduleWorkerForJobType } from "../queues/order-queue.server.js";
 import { logFailureAudit } from "../utils/failure-audit-log.server.js";
+import { recordDlqMetric } from "./monitoring/monitoring-service.server.js";
 
 export async function getDeadLetterJob(deadLetterJobId) {
   return prisma.deadLetterQueueJob.findUnique({ where: { id: deadLetterJobId } });
@@ -82,6 +83,17 @@ export async function replayDeadLetterJob(deadLetterJobId, { requestedBy = "manu
     type: deadLetterJob.type,
     shopifyOrderId: deadLetterJob.shopifyOrderId,
     requestedBy,
+  });
+
+  recordDlqMetric("dlq_replay_attempt", {
+    deadLetterJobId,
+    originalJobId: deadLetterJob.originalJobId,
+    shop: deadLetterJob.shop,
+    type: deadLetterJob.type,
+    shopifyOrderId: deadLetterJob.shopifyOrderId,
+    provider: deadLetterJob.provider,
+    requestedBy,
+    recoveryAttempts: updated.recoveryAttempts,
   });
 
   scheduleWorkerForJobType(deadLetterJob.type);

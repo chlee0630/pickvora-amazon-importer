@@ -1,5 +1,6 @@
 const API_VERSION = "2025-10";
 const DEFAULT_TIMEOUT_MS = 30000;
+import { trackApiCall } from "./monitoring/api-metrics.server.js";
 
 class ShopifyFulfillmentError extends Error {
   constructor(message, { retryable = false, statusCode = null, responsePayload = null } = {}) {
@@ -11,46 +12,51 @@ class ShopifyFulfillmentError extends Error {
 }
 
 async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return trackApiCall("shopify", "fulfillment_graphql", async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  try {
-    const res = await fetch(`https://${shop}/admin/api/${API_VERSION}/graphql.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": accessToken,
-      },
-      body: JSON.stringify({ query, variables }),
-      signal: controller.signal,
-    });
+    try {
+      const res = await fetch(`https://${shop}/admin/api/${API_VERSION}/graphql.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": accessToken,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: controller.signal,
+      });
 
-    const data = await res.json();
-    if (!res.ok) {
-      throw new ShopifyFulfillmentError(`Shopify API returned ${res.status}`, {
-        retryable: [429, 500, 502, 503].includes(res.status),
-        statusCode: res.status,
-        responsePayload: data,
-      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new ShopifyFulfillmentError(`Shopify API returned ${res.status}`, {
+          retryable: [429, 500, 502, 503].includes(res.status),
+          statusCode: res.status,
+          responsePayload: data,
+        });
+      }
+      if (data.errors?.length) {
+        throw new ShopifyFulfillmentError(`Shopify GraphQL errors: ${JSON.stringify(data.errors)}`, {
+          retryable: false,
+          responsePayload: data,
+        });
+      }
+      return data;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new ShopifyFulfillmentError("Shopify fulfillment request timed out", {
+          retryable: true,
+          statusCode: "TIMEOUT",
+        });
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
-    if (data.errors?.length) {
-      throw new ShopifyFulfillmentError(`Shopify GraphQL errors: ${JSON.stringify(data.errors)}`, {
-        retryable: false,
-        responsePayload: data,
-      });
-    }
-    return data;
-  } catch (err) {
-    if (err.name === "AbortError") {
-      throw new ShopifyFulfillmentError("Shopify fulfillment request timed out", {
-        retryable: true,
-        statusCode: "TIMEOUT",
-      });
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
+  }, {
+    shop,
+    timeoutMs,
+  });
 }
 
 export async function fetchFulfillmentContext(shop, accessToken, shopifyOrderId) {

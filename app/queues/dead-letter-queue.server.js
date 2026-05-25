@@ -1,5 +1,6 @@
 import prisma from "../db.server.js";
 import { logFailureAudit, maskSensitivePayload, parseStoredPayload } from "../utils/failure-audit-log.server.js";
+import { recordDlqMetric } from "../services/monitoring/monitoring-service.server.js";
 
 export async function moveJobToDeadLetterQueue(job, failure, client = prisma) {
   const retryHistory = job.retryHistory
@@ -56,6 +57,19 @@ export async function moveJobToDeadLetterQueue(job, failure, client = prisma) {
     failureCategory: failure.category,
     failureReason: failure.reason,
     payload: maskSensitivePayload(parseStoredPayload(job.payload)),
+  });
+
+  recordDlqMetric("dlq_inserted", {
+    deadLetterJobId: deadLetterJob.id,
+    originalJobId: job.id,
+    shop: job.shop,
+    type: job.type,
+    shopifyOrderId: job.shopifyOrderId,
+    provider: job.provider,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    failureCategory: failure.category,
+    failureReason: failure.reason,
   });
 
   return deadLetterJob;

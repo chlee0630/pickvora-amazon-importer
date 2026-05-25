@@ -1,5 +1,6 @@
 const ZINC_API_BASE_URL = "https://api.zinc.io/v1";
 const DEFAULT_TIMEOUT_MS = 30000;
+import { trackApiCall } from "../monitoring/api-metrics.server.js";
 
 function getZincConfig() {
   // eslint-disable-next-line no-undef
@@ -16,41 +17,43 @@ function getZincConfig() {
 }
 
 async function zincFetch(path, { method = "GET", body, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-  const { apiKey } = getZincConfig();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return trackApiCall("zinc", `${method} ${path}`, async () => {
+    const { apiKey } = getZincConfig();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  try {
-    const res = await fetch(`${ZINC_API_BASE_URL}${path}`, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
+    try {
+      const res = await fetch(`${ZINC_API_BASE_URL}${path}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
 
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : {};
-    if (!res.ok) {
-      const message = data?.message || data?.error || `Zinc API returned ${res.status}`;
-      const error = new Error(message);
-      error.statusCode = res.status;
-      error.retryable = [429, 500, 502, 503].includes(res.status);
-      throw error;
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!res.ok) {
+        const message = data?.message || data?.error || `Zinc API returned ${res.status}`;
+        const error = new Error(message);
+        error.statusCode = res.status;
+        error.retryable = [429, 500, 502, 503].includes(res.status);
+        throw error;
+      }
+
+      return data;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        err.retryable = true;
+        err.code = "TIMEOUT";
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    return data;
-  } catch (err) {
-    if (err.name === "AbortError") {
-      err.retryable = true;
-      err.code = "TIMEOUT";
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
+  }, { timeoutMs });
 }
 
 function normalizeStatus(value) {
