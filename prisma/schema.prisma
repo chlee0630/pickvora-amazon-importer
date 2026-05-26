@@ -313,3 +313,21 @@ model FulfillmentLog {
   @@unique([shop, shopifyOrderId, provider, trackingNumber, carrier])
   @@index([shop, shopifyOrderId])
 }
+
+model AdminOrderAction {
+  id             String   @id @default(cuid())
+  shop           String
+  orderId        String
+  shopifyOrderId String
+  actionType     String
+  previousStatus String?
+  newStatus      String?
+  adminNote      String?
+  actionPayload  String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+
+  @@index([shop, shopifyOrderId])
+  @@index([actionType])
+  @@index([createdAt])
+}

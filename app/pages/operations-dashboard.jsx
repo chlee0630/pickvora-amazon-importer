@@ -1,5 +1,6 @@
 /* eslint-disable react/prop-types */
 
+import { useFetcher } from "react-router";
 import {
   DashboardFilters,
   DataTable,
@@ -46,8 +47,32 @@ const apiColumns = [
 ];
 
 export default function OperationsDashboardPage({ dashboard, filters }) {
+  const fetcher = useFetcher();
+  const actionResult = fetcher.data;
+  const manualReviewColumns = [
+    { key: "id", label: "Order id" },
+    { key: "shopifyOrderId", label: "Shopify order id" },
+    { key: "orderNumber", label: "Order number" },
+    { key: "orderStatus", label: "Status" },
+    { key: "zincOrderId", label: "Zinc order id" },
+    { key: "trackingNumber", label: "Tracking number" },
+    { key: "trackingCompany", label: "Tracking company" },
+    { key: "failureReason", label: "Failure reason" },
+    { key: "retryCount", label: "Retry count", render: (row) => `${row.retryCount}/${row.maxAttempts}` },
+    { key: "lastUpdatedAt", label: "Updated", render: (row) => formatDate(row.lastUpdatedAt) },
+    { key: "latestNote", label: "Latest note" },
+    { key: "actions", label: "Actions", render: (row) => <ManualReviewActions row={row} fetcher={fetcher} /> },
+  ];
+
   return (
     <s-page heading="Operations Dashboard">
+      {actionResult && (
+        <s-banner
+          tone={actionResult.success ? "success" : "critical"}
+          title={actionResult.success ? actionResult.message : actionResult.error}
+        />
+      )}
+
       <DashboardFilters filters={filters} />
 
       <s-section heading="Operations overview">
@@ -147,7 +172,7 @@ export default function OperationsDashboardPage({ dashboard, filters }) {
           ]}
         />
         <div style={{ marginTop: "12px" }}>
-          <DataTable columns={orderColumns} rows={dashboard.manualReviewOrders} emptyMessage="No manual review orders found." />
+          <DataTable columns={manualReviewColumns} rows={dashboard.manualReviewOrders} emptyMessage="No manual review orders found." />
         </div>
       </s-section>
     </s-page>
@@ -156,4 +181,105 @@ export default function OperationsDashboardPage({ dashboard, filters }) {
 
 function valueFor(analytics, metricName) {
   return analytics[metricName] ?? 0;
+}
+
+function ManualReviewActions({ row, fetcher }) {
+  return (
+    <div style={{ display: "grid", gap: "8px", minWidth: "220px" }}>
+      <ActionForm
+        fetcher={fetcher}
+        orderId={row.id}
+        intent="retry_zinc_order"
+        label="Retry Zinc Order"
+        disabled={!row.allowedActions.retryZinc}
+      />
+      <ActionForm
+        fetcher={fetcher}
+        orderId={row.id}
+        intent="retry_tracking"
+        label="Retry Tracking"
+        disabled={!row.allowedActions.retryTracking}
+      />
+      <ActionForm
+        fetcher={fetcher}
+        orderId={row.id}
+        intent="retry_fulfillment"
+        label="Retry Fulfillment"
+        disabled={!row.allowedActions.retryFulfillment}
+      />
+      <ActionForm
+        fetcher={fetcher}
+        orderId={row.id}
+        intent="move_manual_review"
+        label="Move to Manual Review"
+        disabled={!row.allowedActions.moveManualReview}
+      />
+      <ActionForm
+        fetcher={fetcher}
+        orderId={row.id}
+        intent="resolve_manual_review"
+        label="Mark Resolved"
+        disabled={!row.allowedActions.resolveManualReview}
+      />
+      <fetcher.Form method="post" style={{ display: "grid", gap: "6px" }}>
+        <input type="hidden" name="intent" value="add_note" />
+        <input type="hidden" name="orderId" value={row.id} />
+        <textarea
+          name="note"
+          rows="2"
+          maxLength="2000"
+          placeholder="Internal note"
+          style={noteStyle}
+        />
+        <button
+          type="submit"
+          disabled={!row.allowedActions.addNote || fetcher.state !== "idle"}
+          style={buttonStyle(!row.allowedActions.addNote || fetcher.state !== "idle")}
+        >
+          Add Note
+        </button>
+      </fetcher.Form>
+    </div>
+  );
+}
+
+function ActionForm({ fetcher, orderId, intent, label, disabled }) {
+  const isDisabled = disabled || fetcher.state !== "idle";
+  return (
+    <fetcher.Form
+      method="post"
+      onSubmit={(event) => {
+        if (!confirm(`${label} for this order?`)) event.preventDefault();
+      }}
+    >
+      <input type="hidden" name="intent" value={intent} />
+      <input type="hidden" name="orderId" value={orderId} />
+      <button type="submit" disabled={isDisabled} style={buttonStyle(isDisabled)}>
+        {label}
+      </button>
+    </fetcher.Form>
+  );
+}
+
+const noteStyle = {
+  width: "100%",
+  minWidth: "180px",
+  border: "1px solid #c9cccf",
+  borderRadius: "6px",
+  padding: "6px 8px",
+  fontSize: "12px",
+};
+
+function buttonStyle(disabled) {
+  return {
+    width: "100%",
+    minHeight: "30px",
+    padding: "5px 8px",
+    border: "1px solid #c9cccf",
+    borderRadius: "6px",
+    background: disabled ? "#f6f6f7" : "white",
+    color: disabled ? "#8c9196" : "#202223",
+    cursor: disabled ? "not-allowed" : "pointer",
+    fontSize: "12px",
+  };
 }

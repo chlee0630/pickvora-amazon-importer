@@ -1,4 +1,5 @@
 import prisma from "../db.server.js";
+import { getAllowedAdminActions } from "./admin-order-actions.server.js";
 import { buildDateWhere, redactDashboardText } from "../utils/dashboard-filters.server.js";
 
 const ANALYTICS_METRICS = [
@@ -266,20 +267,20 @@ async function getOperationalLists(shop, filters) {
       take: filters.pageSize,
       select: orderListSelect(),
     }),
-    prisma.orderQueueJob.findMany({
+    prisma.providerOrder.findMany({
       where: {
-        ...orderWhere,
+        shop,
         OR: [
-          { dlqStatus: "open" },
-          { status: "failed" },
-          { failureReason: { contains: "invalid address" } },
-          { failureReason: { contains: "restricted product" } },
+          { status: "MANUAL_REVIEW" },
+          { status: "FAILED" },
+          { lastError: { not: null } },
         ],
+        ...buildDateWhere(filters, "updatedAt"),
       },
-      orderBy: { lastFailureAt: "desc" },
+      orderBy: { updatedAt: "desc" },
       skip: filters.skip,
       take: filters.pageSize,
-      select: orderListSelect(),
+      select: providerOrderListSelect(),
     }),
     prisma.orderQueueJob.count({
       where: {
@@ -307,12 +308,32 @@ async function getOperationalLists(shop, filters) {
     dlqJobs: dlqJobs.map(formatDlqJob),
     dlqJobsTotal,
     retryJobs: retryJobs.map(formatOrderJob),
-    manualReviewOrders: manualReviewOrders.map(formatOrderJob),
+    manualReviewOrders: await formatManualReviewOrders(manualReviewOrders),
     manualReviewSummary: {
       invalidAddressOrders,
       restrictedProductOrders,
       permanentFailureOrders,
     },
+  };
+}
+
+function providerOrderListSelect() {
+  return {
+    id: true,
+    shop: true,
+    shopifyOrderId: true,
+    provider: true,
+    providerOrderId: true,
+    status: true,
+    requestPayload: true,
+    trackingNumber: true,
+    trackingCarrier: true,
+    trackingUrl: true,
+    trackingReceivedAt: true,
+    fulfillmentSyncedAt: true,
+    processingLockedAt: true,
+    lastError: true,
+    updatedAt: true,
   };
 }
 
@@ -365,6 +386,81 @@ function formatDlqJob(job) {
     ...job,
     failureReason: redactDashboardText(job.failureReason),
   };
+}
+
+async function formatManualReviewOrders(orders) {
+  if (!orders.length) return [];
+
+  const shopifyOrderIds = orders.map((order) => order.shopifyOrderId);
+  const [queueJobs, latestActions] = await Promise.all([
+    prisma.orderQueueJob.findMany({
+      where: { shopifyOrderId: { in: shopifyOrderIds } },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        shopifyOrderId: true,
+        attempts: true,
+        maxAttempts: true,
+        failureReason: true,
+        lastError: true,
+        failureCategory: true,
+      },
+    }),
+    prisma.adminOrderAction.findMany({
+      where: { shopifyOrderId: { in: shopifyOrderIds } },
+      orderBy: { createdAt: "desc" },
+      select: {
+        shopifyOrderId: true,
+        adminNote: true,
+        actionType: true,
+        createdAt: true,
+      },
+      take: 100,
+    }),
+  ]);
+
+  const queueByOrder = firstBy(queueJobs, "shopifyOrderId");
+  const actionByOrder = firstBy(latestActions, "shopifyOrderId");
+
+  return orders.map((order) => {
+    const queueJob = queueByOrder.get(order.shopifyOrderId);
+    const latestAction = actionByOrder.get(order.shopifyOrderId);
+    return {
+      id: order.id,
+      shopifyOrderId: order.shopifyOrderId,
+      orderNumber: extractOrderNumber(order.requestPayload),
+      orderStatus: order.status,
+      zincOrderId: order.providerOrderId,
+      trackingNumber: order.trackingNumber,
+      trackingCompany: order.trackingCarrier,
+      failureReason: redactDashboardText(order.lastError || queueJob?.failureReason || queueJob?.lastError),
+      retryCount: queueJob?.attempts || 0,
+      maxAttempts: queueJob?.maxAttempts || 0,
+      failureCategory: queueJob?.failureCategory || null,
+      lastUpdatedAt: order.updatedAt,
+      latestNote: redactDashboardText(latestAction?.adminNote),
+      latestActionType: latestAction?.actionType || null,
+      latestActionAt: latestAction?.createdAt || null,
+      allowedActions: getAllowedAdminActions(order),
+    };
+  });
+}
+
+function firstBy(rows, key) {
+  const map = new Map();
+  for (const row of rows) {
+    if (!map.has(row[key])) map.set(row[key], row);
+  }
+  return map;
+}
+
+function extractOrderNumber(payload) {
+  if (!payload) return "-";
+  try {
+    const parsed = JSON.parse(payload);
+    return parsed.orderName || parsed.name || "-";
+  } catch {
+    return "-";
+  }
 }
 
 function summarizeWorkers(events) {

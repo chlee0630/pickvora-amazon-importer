@@ -1,6 +1,7 @@
 import { useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { runAdminOrderAction } from "../services/admin-order-actions.server";
 import { getOperationsDashboard } from "../services/dashboard.server";
 import { parseDashboardFilters } from "../utils/dashboard-filters.server";
 import OperationsDashboardPage from "../pages/operations-dashboard";
@@ -14,6 +15,29 @@ export const loader = async ({ request }) => {
     dashboard,
     filters,
   };
+};
+
+export const action = async ({ request }) => {
+  const { session } = await authenticate.admin(request);
+  const form = await request.formData();
+  const intent = String(form.get("intent") || "");
+
+  try {
+    const result = await runAdminOrderAction({
+      shop: session.shop,
+      orderId: String(form.get("orderId") || ""),
+      actionType: intent,
+      note: String(form.get("note") || "").trim().slice(0, 2000),
+      createdBy: session.email || session.userId?.toString() || session.shop,
+    });
+    return result;
+  } catch (err) {
+    console.error("Operations dashboard admin action failure:", err?.message || err);
+    return {
+      success: false,
+      error: err?.message || "Admin action failed.",
+    };
+  }
 };
 
 export default function OperationsDashboard() {
