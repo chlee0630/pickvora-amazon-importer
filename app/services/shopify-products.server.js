@@ -1,3 +1,5 @@
+import { withApiRetry, truncateLogPayload } from "../utils/api-retry.server.js";
+
 const API_VERSION = "2025-10";
 // eslint-disable-next-line no-undef
 const ASSOCIATE_TAG = process.env.AMAZON_ASSOCIATE_TAG || "pickvora-20";
@@ -14,14 +16,28 @@ const DISCLAIMER_HTML = `
 </div>`;
 
 function adminFetch(shop, accessToken, query, variables = {}) {
-  return fetch(`https://${shop}/admin/api/${API_VERSION}/graphql.json`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": accessToken,
-    },
-    body: JSON.stringify({ query, variables }),
-  }).then((r) => r.json());
+  return withApiRetry(async () => {
+    const res = await fetch(`https://${shop}/admin/api/${API_VERSION}/graphql.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": accessToken,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const error = new Error(`Shopify API returned ${res.status}: ${truncateLogPayload(data)}`);
+      error.statusCode = res.status;
+      error.retryAfter = res.headers.get("retry-after");
+      error.retryable = [429, 500, 502, 503, 504].includes(res.status);
+      throw error;
+    }
+    return data;
+  }, {
+    provider: "shopify",
+    operationName: "product_graphql",
+  });
 }
 
 export async function createShopifyProduct(shop, accessToken, amazonData, settings) {

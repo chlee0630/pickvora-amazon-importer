@@ -1,9 +1,11 @@
-const API_VERSION = "2025-10";
-const DEFAULT_TIMEOUT_MS = 30000;
+import { withApiRetry } from "../utils/api-retry.server.js";
 import { trackApiCall } from "./monitoring/api-metrics.server.js";
 
+const API_VERSION = "2025-10";
+const DEFAULT_TIMEOUT_MS = 30000;
+
 async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return trackApiCall("shopify", "fetch_order", async () => {
+  return withApiRetry(() => trackApiCall("shopify", "fetch_order", async () => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -19,7 +21,8 @@ async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = 
       if (!res.ok) {
         const error = new Error(`Shopify API returned ${res.status}`);
         error.statusCode = res.status;
-        error.retryable = [429, 500, 502, 503].includes(res.status);
+        error.retryAfter = res.headers.get("retry-after");
+        error.retryable = [429, 500, 502, 503, 504].includes(res.status);
         throw error;
       }
       return res.json();
@@ -32,7 +35,10 @@ async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = 
     } finally {
       clearTimeout(timeout);
     }
-  }, { shop, timeoutMs });
+  }, { shop, timeoutMs }), {
+    provider: "shopify",
+    operationName: "fetch_order",
+  });
 }
 
 export async function fetchShopifyOrder(shop, accessToken, shopifyOrderId) {

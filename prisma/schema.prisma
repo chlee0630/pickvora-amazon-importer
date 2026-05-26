@@ -175,6 +175,8 @@ model OrderQueueJob {
   @@unique([shop, type, shopifyOrderId])
   @@index([status, runAt])
   @@index([dlqStatus])
+  @@index([shopifyOrderId])
+  @@index([shop, status, updatedAt])
 }
 
 model DeadLetterQueueJob {
@@ -279,7 +281,9 @@ model ProviderOrder {
 
   @@unique([shop, shopifyOrderId, provider])
   @@index([provider, providerOrderId])
+  @@index([providerOrderId])
   @@index([status, processingLockedAt])
+  @@index([shop, updatedAt])
 }
 
 model ProviderHealth {

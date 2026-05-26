@@ -4,10 +4,9 @@ import { classifyFailure, getFailureMessage } from "../utils/failure-classifier.
 import { logFailureAudit } from "../utils/failure-audit-log.server.js";
 import { scheduleQueueHealthCheck } from "../services/monitoring/queue-health.server.js";
 import { recordMonitoringEvent, recordRetryMetric } from "../services/monitoring/monitoring-service.server.js";
+import { getScalingConfig } from "../utils/scaling-config.server.js";
 
 const DEFAULT_MAX_ATTEMPTS = 5;
-const TRACKING_MAX_ATTEMPTS = 20;
-const TRACKING_POLL_INTERVAL_MS = 30 * 60 * 1000;
 const STALE_LOCK_MS = 10 * 60 * 1000;
 
 export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload, provider = "zinc" }) {
@@ -50,9 +49,37 @@ export async function enqueueTrackingPollJob({
   shop,
   shopifyOrderId,
   provider = "zinc",
-  delayMs = TRACKING_POLL_INTERVAL_MS,
+  delayMs,
+  rescheduleExisting = false,
 }) {
-  const runAt = new Date(Date.now() + delayMs);
+  const { trackingPollIntervalMinutes, trackingPollMaxAttempts } = getScalingConfig();
+  const effectiveDelayMs = Number.isFinite(delayMs) ? delayMs : trackingPollIntervalMinutes * 60 * 1000;
+  const runAt = new Date(Date.now() + effectiveDelayMs);
+  const existingJob = await prisma.orderQueueJob.findUnique({
+    where: {
+      shop_type_shopifyOrderId: {
+        shop,
+        type: "tracking.poll",
+        shopifyOrderId,
+      },
+    },
+  });
+
+  if (
+    existingJob &&
+    (existingJob.status === "pending" || (existingJob.status === "processing" && !rescheduleExisting))
+  ) {
+    logQueueEvent("tracking_poll_duplicate_skipped", {
+      jobId: existingJob.id,
+      shop,
+      type: "tracking.poll",
+      shopifyOrderId,
+      provider,
+      status: existingJob.status,
+    });
+    return existingJob;
+  }
+
   const job = await prisma.orderQueueJob.upsert({
     where: {
       shop_type_shopifyOrderId: {
@@ -67,7 +94,7 @@ export async function enqueueTrackingPollJob({
       shopifyOrderId,
       provider,
       runAt,
-      maxAttempts: TRACKING_MAX_ATTEMPTS,
+      maxAttempts: trackingPollMaxAttempts,
     },
     update: {
       status: "pending",
@@ -82,7 +109,7 @@ export async function enqueueTrackingPollJob({
     },
   });
 
-  scheduleTrackingWorkerRun(delayMs);
+  scheduleTrackingWorkerRun(effectiveDelayMs);
   scheduleQueueHealthCheck();
   return job;
 }

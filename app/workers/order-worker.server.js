@@ -10,6 +10,7 @@ import { recordProviderFailure, recordProviderSuccess } from "../services/order-
 import { fetchShopifyOrder } from "../services/shopify-orders.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
 import { normalizeProviderError, logProviderEvent } from "../utils/provider-errors.server.js";
+import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
@@ -32,31 +33,39 @@ export async function runOrderWorkerOnce() {
   workerRunning = true;
 
   try {
-    let job = await claimNextOrderJob({ types: ["order.create"] });
-    while (job) {
-      try {
-        await trackWorkerJob("order_worker", job, async () => {
-          if (job.type !== "order.create") {
-            throw new PermanentOrderError(`Unsupported order job type: ${job.type}`);
-          }
-
-          await withTimeout(processCreateOrderJob(job), JOB_TIMEOUT_MS);
-          await completeOrderJob(job.id);
-        }, { timeoutMs: JOB_TIMEOUT_MS });
-      } catch (err) {
-        logWorkerEvent("order_job_error", job, {
-          error: err.message,
-          retryable: isRetryableError(err),
-        });
-
-        await releaseProviderOrderLock(job, err);
-        await failOrderJob(job, err, { retryable: isRetryableError(err) });
-      }
-
-      job = await claimNextOrderJob({ types: ["order.create"] });
-    }
+    const { orderWorkerConcurrency } = getScalingConfig();
+    // Safe default is intentionally low; DB row locks still provide idempotency.
+    await Promise.all(
+      Array.from({ length: orderWorkerConcurrency }, () => drainOrderJobs())
+    );
   } finally {
     workerRunning = false;
+  }
+}
+
+async function drainOrderJobs() {
+  let job = await claimNextOrderJob({ types: ["order.create"] });
+  while (job) {
+    try {
+      await trackWorkerJob("order_worker", job, async () => {
+        if (job.type !== "order.create") {
+          throw new PermanentOrderError(`Unsupported order job type: ${job.type}`);
+        }
+
+        await withTimeout(processCreateOrderJob(job), JOB_TIMEOUT_MS);
+        await completeOrderJob(job.id);
+      }, { timeoutMs: JOB_TIMEOUT_MS });
+    } catch (err) {
+      logWorkerEvent("order_job_error", job, {
+        error: err.message,
+        retryable: isRetryableError(err),
+      });
+
+      await releaseProviderOrderLock(job, err);
+      await failOrderJob(job, err, { retryable: isRetryableError(err) });
+    }
+
+    job = await claimNextOrderJob({ types: ["order.create"] });
   }
 }
 

@@ -1,3 +1,5 @@
+import { getScalingConfig } from "./scaling-config.server.js";
+
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 50;
 const ALLOWED_ORDER_STATUSES = new Set(["pending", "processing", "complete", "failed"]);
@@ -5,9 +7,12 @@ const ALLOWED_QUEUE_STATUSES = new Set(["pending", "processing", "complete", "fa
 const ALLOWED_FAILURE_CATEGORIES = new Set(["retryable", "permanent"]);
 
 export function parseDashboardFilters(request) {
+  const config = getScalingConfig();
   const url = new URL(request.url);
   const page = clampPositiveInteger(url.searchParams.get("page"), 1);
-  const pageSize = Math.min(clampPositiveInteger(url.searchParams.get("pageSize"), DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
+  const defaultPageSize = config.dashboardPageSize || DEFAULT_PAGE_SIZE;
+  const maxPageSize = config.dashboardMaxPageSize || MAX_PAGE_SIZE;
+  const pageSize = Math.min(clampPositiveInteger(url.searchParams.get("pageSize"), defaultPageSize), maxPageSize);
   const dateRange = parseDateRange(url.searchParams.get("from"), url.searchParams.get("to"));
 
   return {

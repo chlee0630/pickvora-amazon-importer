@@ -718,21 +718,75 @@ Production safety is highest priority.
 
 Current completed features:
 
-\- Operations Dashboard
+✔ webhook async architecture
 
-\- Admin Retry Tools
+✔ retry-safe workers
 
-\- Manual Review UI
+✔ dead letter queue (DLQ)
 
-\- Retry-safe workers
+✔ tracking polling workers
 
-\- DLQ monitoring
+✔ fulfillment sync
 
-\- Tracking polling
+✔ operations dashboard
 
-\- Fulfillment sync
+✔ duplicate webhook prevention
 
+✔ duplicate Zinc order prevention
 
+✔ duplicate fulfillment prevention
+
+✔ analytics aggregation layer
+
+✔ monitoring layer
+
+✔ Admin Retry Tools
+
+✔ Manual Review UI
+
+✔ Review Import System v1
+
+✔ Shopify review metafield sync
+
+✔ review rating/review count storage
+
+✔ review badge enhancement
+
+✔ Shopify app block/theme extension for review badge
+
+✔ product page review badge
+
+✔ mobile responsive review badge
+
+✔ metafield fallback handling
+
+✔ Provider Failover Improvements v1
+
+✔ provider abstraction architecture
+
+✔ provider error normalization
+
+✔ provider health tracking
+
+✔ manual-review fallback flow
+
+✔ Scaling Optimization v1
+
+✔ queue concurrency safety
+
+✔ import batch size protection
+
+✔ Shopify API retry/backoff optimization
+
+✔ Rainforest API timeout/retry optimization
+
+✔ dashboard pagination protection
+
+✔ tracking polling interval optimization
+
+✔ duplicate polling prevention
+
+✔ worker memory/log protection
 
 \---
 

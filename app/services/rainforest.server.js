@@ -1,3 +1,6 @@
+import { withApiRetry, truncateLogPayload } from "../utils/api-retry.server.js";
+import { getScalingConfig } from "../utils/scaling-config.server.js";
+
 const RAINFOREST_API_KEY = process.env.RAINFOREST_API_KEY;
 const BASE_URL = "https://api.rainforestapi.com/request";
 const AMAZON_DOMAIN = "amazon.com";
@@ -10,12 +13,37 @@ async function request(params) {
     url.searchParams.set(k, v);
   }
 
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Rainforest API ${res.status}: ${text}`);
-  }
-  return res.json();
+  const { rainforestTimeoutMs, rainforestMaxRetries } = getScalingConfig();
+  return withApiRetry(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), rainforestTimeoutMs);
+
+    try {
+      const res = await fetch(url.toString(), { signal: controller.signal });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!res.ok) {
+        const error = new Error(`Rainforest API ${res.status}: ${truncateLogPayload(data)}`);
+        error.statusCode = res.status;
+        error.retryAfter = res.headers.get("retry-after");
+        error.retryable = [429, 500, 502, 503, 504].includes(res.status);
+        throw error;
+      }
+      return data;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        err.code = "TIMEOUT";
+        err.retryable = true;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }, {
+    provider: "rainforest",
+    operationName: params.type || "request",
+    maxAttempts: rainforestMaxRetries + 1,
+  });
 }
 
 export async function fetchProductDetails(asin) {

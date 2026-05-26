@@ -1,3 +1,5 @@
+/* eslint-disable jsx-a11y/label-has-associated-control, react/no-unescaped-entities */
+
 import { useState } from "react";
 import { Form, useActionData, useNavigation, useLoaderData } from "react-router";
 import { btnStyle } from "../utils/btn";
@@ -6,6 +8,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { importASINs } from "../services/amazon-sync.server";
 import { RISK_EMOJI, RISK_LABEL } from "../utils/filter-constants";
+import { getScalingConfig } from "../utils/scaling-config.server";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -32,8 +35,9 @@ export const action = async ({ request }) => {
     return { error: "유효한 ASIN을 1개 이상 입력해주세요 (10자리 영숫자)" };
   }
 
-  if (asins.length > 50) {
-    return { error: "한 번에 최대 50개까지 가져올 수 있습니다" };
+  const { importBatchMaxSize } = getScalingConfig();
+  if (asins.length > importBatchMaxSize) {
+    return { error: `한 번에 최대 ${importBatchMaxSize}개까지 가져올 수 있습니다` };
   }
 
   await prisma.appSettings.upsert({

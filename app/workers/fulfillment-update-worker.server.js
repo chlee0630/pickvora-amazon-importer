@@ -11,6 +11,7 @@ import {
   hasMatchingFulfillment,
 } from "../services/shopify-fulfillments.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
+import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 import { recordFulfillmentMetric } from "../services/monitoring/monitoring-service.server.js";
 
@@ -26,37 +27,45 @@ export async function runFulfillmentUpdateWorkerOnce() {
   workerRunning = true;
 
   try {
-    let job = await claimNextOrderJob({ types: ["fulfillment.update"] });
-    while (job) {
-      try {
-        await trackWorkerJob("fulfillment_update_worker", job, async () => {
-          await withTimeout(processFulfillmentJob(job), JOB_TIMEOUT_MS);
-          await completeOrderJob(job.id);
-        }, { timeoutMs: JOB_TIMEOUT_MS });
-      } catch (err) {
-        recordFulfillmentMetric("fulfillment_failure", {
-          jobId: job.id,
-          shop: job.shop,
-          type: job.type,
-          shopifyOrderId: job.shopifyOrderId,
-          provider: job.provider,
-          attempts: job.attempts,
-          error: err.message,
-          retryable: isRetryableError(err),
-        });
-        logFulfillmentEvent("fulfillment_job_error", job, {
-          error: err.message,
-          retryable: isRetryableError(err),
-        });
-
-        await releaseFulfillmentLock(job, err);
-        await failOrderJob(job, err, { retryable: isRetryableError(err) });
-      }
-
-      job = await claimNextOrderJob({ types: ["fulfillment.update"] });
-    }
+    const { fulfillmentWorkerConcurrency } = getScalingConfig();
+    // Safe default is intentionally low; fulfillment duplicate checks remain authoritative.
+    await Promise.all(
+      Array.from({ length: fulfillmentWorkerConcurrency }, () => drainFulfillmentJobs())
+    );
   } finally {
     workerRunning = false;
+  }
+}
+
+async function drainFulfillmentJobs() {
+  let job = await claimNextOrderJob({ types: ["fulfillment.update"] });
+  while (job) {
+    try {
+      await trackWorkerJob("fulfillment_update_worker", job, async () => {
+        await withTimeout(processFulfillmentJob(job), JOB_TIMEOUT_MS);
+        await completeOrderJob(job.id);
+      }, { timeoutMs: JOB_TIMEOUT_MS });
+    } catch (err) {
+      recordFulfillmentMetric("fulfillment_failure", {
+        jobId: job.id,
+        shop: job.shop,
+        type: job.type,
+        shopifyOrderId: job.shopifyOrderId,
+        provider: job.provider,
+        attempts: job.attempts,
+        error: err.message,
+        retryable: isRetryableError(err),
+      });
+      logFulfillmentEvent("fulfillment_job_error", job, {
+        error: err.message,
+        retryable: isRetryableError(err),
+      });
+
+      await releaseFulfillmentLock(job, err);
+      await failOrderJob(job, err, { retryable: isRetryableError(err) });
+    }
+
+    job = await claimNextOrderJob({ types: ["fulfillment.update"] });
   }
 }
 

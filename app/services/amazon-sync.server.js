@@ -7,6 +7,7 @@ import {
   hideShopifyProduct,
   showShopifyProduct,
 } from "./shopify-products.server.js";
+import { getScalingConfig } from "../utils/scaling-config.server.js";
 
 async function getSettings(shop) {
   return (
@@ -38,19 +39,38 @@ async function addLog(shop, asin, action, status, message, oldValue, newValue) {
 export async function importASINs(asins, shop, accessToken, overrideBlocks = false) {
   const settings = await getSettings(shop);
   const results = [];
+  const { importBatchSize, importBatchMaxSize, importWorkerConcurrency } = getScalingConfig();
+  if (asins.length > importBatchMaxSize) {
+    console.log(JSON.stringify({
+      event: "import_batch_split",
+      layer: "amazon_import",
+      requestedCount: asins.length,
+      maxBatchSize: importBatchMaxSize,
+      batchSize: importBatchSize,
+    }));
+  }
 
-  for (const asin of asins) {
-    const trimmed = asin.trim().toUpperCase();
-    if (!trimmed) continue;
+  for (const batch of chunkArray(asins, importBatchSize)) {
+    const settled = await runWithConcurrency(batch, importWorkerConcurrency, (asin) =>
+      importSingleASIN({ asin, shop, accessToken, overrideBlocks, settings })
+    );
+    results.push(...settled);
+  }
 
-    try {
+  return results;
+}
+
+async function importSingleASIN({ asin, shop, accessToken, overrideBlocks, settings }) {
+  const trimmed = asin.trim().toUpperCase();
+  if (!trimmed) return null;
+
+  try {
       const existing = await prisma.amazonProduct.findUnique({
         where: { asin: trimmed },
       });
       if (existing) {
         await syncProduct(existing, shop, accessToken);
-        results.push({ asin: trimmed, status: "success", message: "Existing product updated" });
-        continue;
+        return { asin: trimmed, status: "success", message: "Existing product updated" };
       }
 
       // Fetch Amazon data
@@ -59,13 +79,12 @@ export async function importASINs(asins, shop, accessToken, overrideBlocks = fal
       if (amazonData.cannotBeShipped) {
         const reason = amazonData.shippingUnavailableReason || "This item cannot be shipped to the selected location";
         await addLog(shop, trimmed, "import", "skipped", `Shipping unavailable: ${reason}`);
-        results.push({
+        return {
           asin: trimmed,
           status: "blocked",
           filterReason: reason,
           title: amazonData.title,
-        });
-        continue;
+        };
       }
 
       // Run copyright filter
@@ -91,14 +110,13 @@ export async function importASINs(asins, shop, accessToken, overrideBlocks = fal
           },
         });
         await addLog(shop, trimmed, "import", "blocked", `Blocked: ${filterReason}`, null, riskLevel);
-        results.push({
+        return {
           asin: trimmed,
           status: "blocked",
           riskLevel,
           filterReason,
           title: amazonData.title,
-        });
-        continue;
+        };
       }
 
       // Warned (medium risk) or forced override
@@ -124,13 +142,13 @@ export async function importASINs(asins, shop, accessToken, overrideBlocks = fal
         : `Imported: ${amazonData.title}`;
       await addLog(shop, trimmed, "import", "success", logMsg, null, riskLevel);
 
-      results.push({
+      return {
         asin: trimmed,
         status: filterStatus === "warned" ? "warned" : "success",
         riskLevel,
         filterReason: filterReason || null,
         title: amazonData.title,
-      });
+      };
     } catch (err) {
       await addLog(shop, trimmed, "import", "error", err.message);
       await prisma.amazonProduct.upsert({
@@ -138,11 +156,35 @@ export async function importASINs(asins, shop, accessToken, overrideBlocks = fal
         create: { asin: trimmed, title: trimmed, syncStatus: "error", syncError: err.message },
         update: { syncStatus: "error", syncError: err.message },
       });
-      results.push({ asin: trimmed, status: "error", message: err.message });
+      return { asin: trimmed, status: "error", message: err.message };
+    }
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function runWithConcurrency(items, concurrency, handler) {
+  const results = [];
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      const result = await handler(items[currentIndex]);
+      if (result) results[currentIndex] = result;
     }
   }
 
-  return results;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  );
+  return results.filter(Boolean);
 }
 
 export async function syncProduct(product, shop, accessToken) {

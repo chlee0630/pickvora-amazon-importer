@@ -8,11 +8,12 @@ import {
 } from "../queues/order-queue.server.js";
 import { getOrderProvider } from "../services/order-providers/index.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
+import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 
 const JOB_TIMEOUT_MS = 30000;
-const POLLING_INTERVAL_MS = 30 * 60 * 1000;
 const TRACKING_LOCK_TTL_MS = 10 * 60 * 1000;
+const ELIGIBLE_POLLING_STATES = new Set(["ZINC_SUBMITTED", "ORDERED"]);
 
 let workerRunning = false;
 
@@ -23,29 +24,37 @@ export async function runTrackingPollingWorkerOnce() {
   workerRunning = true;
 
   try {
-    let job = await claimNextOrderJob({ types: ["tracking.poll"] });
-    while (job) {
-      try {
-        await trackWorkerJob("tracking_polling_worker", job, async () => {
-          const shouldComplete = await withTimeout(processTrackingPollJob(job), JOB_TIMEOUT_MS);
-          if (shouldComplete !== false) {
-            await completeOrderJob(job.id);
-          }
-        }, { timeoutMs: JOB_TIMEOUT_MS });
-      } catch (err) {
-        logTrackingEvent("tracking_poll_error", job, {
-          error: err.message,
-          retryable: isRetryableError(err),
-        });
-
-        await releaseTrackingLock(job, err);
-        await failOrderJob(job, err, { retryable: isRetryableError(err) });
-      }
-
-      job = await claimNextOrderJob({ types: ["tracking.poll"] });
-    }
+    const { trackingWorkerConcurrency } = getScalingConfig();
+    // Safe default is intentionally low to avoid provider/API bursts.
+    await Promise.all(
+      Array.from({ length: trackingWorkerConcurrency }, () => drainTrackingJobs())
+    );
   } finally {
     workerRunning = false;
+  }
+}
+
+async function drainTrackingJobs() {
+  let job = await claimNextOrderJob({ types: ["tracking.poll"] });
+  while (job) {
+    try {
+      await trackWorkerJob("tracking_polling_worker", job, async () => {
+        const shouldComplete = await withTimeout(processTrackingPollJob(job), JOB_TIMEOUT_MS);
+        if (shouldComplete !== false) {
+          await completeOrderJob(job.id);
+        }
+      }, { timeoutMs: JOB_TIMEOUT_MS });
+    } catch (err) {
+      logTrackingEvent("tracking_poll_error", job, {
+        error: err.message,
+        retryable: isRetryableError(err),
+      });
+
+      await releaseTrackingLock(job, err);
+      await failOrderJob(job, err, { retryable: isRetryableError(err) });
+    }
+
+    job = await claimNextOrderJob({ types: ["tracking.poll"] });
   }
 }
 
@@ -66,6 +75,19 @@ export function initTrackingPollingWorkers() {
 }
 
 async function processTrackingPollJob(job) {
+  const existingProviderOrder = await getProviderOrder(job);
+  if (!existingProviderOrder) {
+    logTrackingEvent("tracking_poll_skipped", job, { reason: "provider_order_missing" });
+    throw new PermanentTrackingError("Provider order id is missing");
+  }
+  if (!isEligibleForAutomaticPolling(existingProviderOrder)) {
+    logTrackingEvent("tracking_poll_skipped", job, {
+      reason: "ineligible_provider_status",
+      providerStatus: existingProviderOrder.status,
+    });
+    return;
+  }
+
   const providerOrder = await acquireTrackingLock(job);
   if (!providerOrder) {
     throw retryableError("Tracking polling lock is held by another worker", "LOCKED");
@@ -109,7 +131,8 @@ async function processTrackingPollJob(job) {
       shop: job.shop,
       shopifyOrderId: job.shopifyOrderId,
       provider: job.provider,
-      delayMs: POLLING_INTERVAL_MS,
+      delayMs: getTrackingPollIntervalMs(),
+      rescheduleExisting: true,
     });
     return false;
   }
@@ -175,15 +198,7 @@ async function processTrackingPollJob(job) {
 async function acquireTrackingLock(job) {
   const now = new Date();
   const staleLock = new Date(Date.now() - TRACKING_LOCK_TTL_MS);
-  const providerOrder = await prisma.providerOrder.findUnique({
-    where: {
-      shop_shopifyOrderId_provider: {
-        shop: job.shop,
-        shopifyOrderId: job.shopifyOrderId,
-        provider: job.provider,
-      },
-    },
-  });
+  const providerOrder = await getProviderOrder(job);
 
   if (!providerOrder) return null;
 
@@ -191,6 +206,7 @@ async function acquireTrackingLock(job) {
     where: {
       id: providerOrder.id,
       providerOrderId: { not: null },
+      status: { in: Array.from(ELIGIBLE_POLLING_STATES) },
       OR: [
         { processingLockedAt: null },
         { processingLockedAt: { lt: staleLock } },
@@ -205,6 +221,28 @@ async function acquireTrackingLock(job) {
 
   if (claimed.count !== 1) return null;
   return prisma.providerOrder.findUnique({ where: { id: providerOrder.id } });
+}
+
+function getProviderOrder(job) {
+  return prisma.providerOrder.findUnique({
+    where: {
+      shop_shopifyOrderId_provider: {
+        shop: job.shop,
+        shopifyOrderId: job.shopifyOrderId,
+        provider: job.provider,
+      },
+    },
+  });
+}
+
+function isEligibleForAutomaticPolling(providerOrder) {
+  if (providerOrder.fulfillmentSyncedAt || providerOrder.status === "FULFILLED") return false;
+  if (providerOrder.status === "MANUAL_REVIEW" || providerOrder.status === "FAILED") return false;
+  return ELIGIBLE_POLLING_STATES.has(providerOrder.status);
+}
+
+function getTrackingPollIntervalMs() {
+  return getScalingConfig().trackingPollIntervalMinutes * 60 * 1000;
 }
 
 async function releaseTrackingLock(job, error) {
