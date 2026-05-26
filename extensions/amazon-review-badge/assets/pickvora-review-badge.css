@@ -1,0 +1,56 @@
+.pickvora-review-badge {
+  --pickvora-review-star-color: #f5a623;
+  --pickvora-review-text-color: inherit;
+  --pickvora-review-font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  color: var(--pickvora-review-text-color);
+  font-size: var(--pickvora-review-font-size);
+  line-height: 1.3;
+  vertical-align: middle;
+}
+
+.pickvora-review-badge__stars {
+  display: inline-flex;
+  align-items: center;
+  color: var(--pickvora-review-star-color);
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.pickvora-review-badge__rating {
+  font-weight: 600;
+}
+
+.pickvora-review-badge__count {
+  color: var(--pickvora-review-text-color);
+  opacity: 0.78;
+  white-space: nowrap;
+}
+
+.pickvora-review-badge--left {
+  justify-content: flex-start;
+}
+
+.pickvora-review-badge--center {
+  justify-content: center;
+}
+
+.pickvora-review-badge--right {
+  justify-content: flex-end;
+}
+
+.pickvora-review-badge__wrap {
+  width: 100%;
+}
+
+@media screen and (max-width: 749px) {
+  .pickvora-review-badge {
+    gap: 4px;
+    font-size: min(var(--pickvora-review-font-size), 13px);
+    flex-wrap: wrap;
+  }
+}
+

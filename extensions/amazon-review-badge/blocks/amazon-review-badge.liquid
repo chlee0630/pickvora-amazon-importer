@@ -1,0 +1,104 @@
+{{ 'pickvora-review-badge.css' | asset_url | stylesheet_tag }}
+
+{%- liquid
+  assign rating_metafield = product.metafields.amazon_reviews.average_rating
+  assign count_metafield = product.metafields.amazon_reviews.review_count
+  assign updated_at_metafield = product.metafields.amazon_reviews.updated_at
+  assign rating_raw = rating_metafield.value | default: rating_metafield
+  assign count_raw = count_metafield.value | default: count_metafield
+  assign updated_at = updated_at_metafield.value | default: updated_at_metafield
+  assign rating_check = rating_raw | append: '' | remove: '0' | remove: '1' | remove: '2' | remove: '3' | remove: '4' | remove: '5' | remove: '6' | remove: '7' | remove: '8' | remove: '9' | remove: '.'
+  assign count_check = count_raw | append: '' | remove: '0' | remove: '1' | remove: '2' | remove: '3' | remove: '4' | remove: '5' | remove: '6' | remove: '7' | remove: '8' | remove: '9'
+  assign rating = rating_raw | times: 1.0
+  assign count = count_raw | plus: 0
+-%}
+
+{%- if rating_raw != blank and rating_check == blank and rating >= 0 and rating <= 5 -%}
+  {%- liquid
+    assign rounded_rating = rating | round: 1
+    assign full_stars = rating | floor
+    assign next_star = full_stars | plus: 1
+    assign count_label = ''
+    if count_raw != blank and count_check == blank and count >= 0
+      assign formatted_count = count | money_without_currency | replace: '.00', ''
+      assign count_label = formatted_count | append: ' reviews'
+    endif
+  -%}
+
+  <div class="pickvora-review-badge__wrap pickvora-review-badge--{{ block.settings.alignment }}">
+    <div
+      class="pickvora-review-badge"
+      style="
+        --pickvora-review-star-color: {{ block.settings.star_color }};
+        --pickvora-review-text-color: {{ block.settings.text_color }};
+        --pickvora-review-font-size: {{ block.settings.font_size }}px;
+      "
+      aria-label="Amazon rating {{ rounded_rating }} out of 5{% if block.settings.show_review_count and count_label != blank %}, {{ count_label }}{% endif %}"
+      {% if updated_at != blank %}data-reviews-updated-at="{{ updated_at | escape }}"{% endif %}
+    >
+      <span class="pickvora-review-badge__stars" aria-hidden="true">
+        {%- for index in (1..5) -%}
+          {%- if index <= full_stars -%}
+            ★
+          {%- elsif index == next_star and rating > full_stars -%}
+            ★
+          {%- else -%}
+            ☆
+          {%- endif -%}
+        {%- endfor -%}
+      </span>
+      <span class="pickvora-review-badge__rating">{{ rounded_rating }}</span>
+      {%- if block.settings.show_review_count and count_label != blank -%}
+        <span class="pickvora-review-badge__count">({{ count_label }})</span>
+      {%- endif -%}
+    </div>
+  </div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Amazon review badge",
+  "target": "section",
+  "settings": [
+    {
+      "type": "checkbox",
+      "id": "show_review_count",
+      "label": "Show review count",
+      "default": true
+    },
+    {
+      "type": "color",
+      "id": "star_color",
+      "label": "Star color",
+      "default": "#f5a623"
+    },
+    {
+      "type": "color",
+      "id": "text_color",
+      "label": "Text color",
+      "default": "#202223"
+    },
+    {
+      "type": "range",
+      "id": "font_size",
+      "label": "Font size",
+      "min": 11,
+      "max": 22,
+      "step": 1,
+      "unit": "px",
+      "default": 14
+    },
+    {
+      "type": "select",
+      "id": "alignment",
+      "label": "Alignment",
+      "options": [
+        { "value": "left", "label": "Left" },
+        { "value": "center", "label": "Center" },
+        { "value": "right", "label": "Right" }
+      ],
+      "default": "left"
+    }
+  ]
+}
+{% endschema %}

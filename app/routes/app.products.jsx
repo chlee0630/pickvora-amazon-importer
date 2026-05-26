@@ -1,3 +1,5 @@
+/* eslint-disable react/prop-types */
+
 import { useFetcher, useLoaderData } from "react-router";
 import { btnStyle } from "../utils/btn";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -136,12 +138,7 @@ export default function ProductsPage() {
                         {p.shopifyPrice != null ? `$${p.shopifyPrice.toFixed(2)}` : "-"}
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                        {p.rating != null ? (
-                          <span style={{ fontSize: "12px", color: "#6d7175", whiteSpace: "nowrap" }}>
-                            ★ {Number(p.rating).toFixed(1)}
-                            {p.ratingsTotal > 0 ? ` (${p.ratingsTotal.toLocaleString()})` : ""}
-                          </span>
-                        ) : "-"}
+                        <ReviewBadgePreview rating={p.rating} count={p.ratingsTotal} />
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         {p.marginRate}%
@@ -247,6 +244,33 @@ export default function ProductsPage() {
         )}
       </s-section>
     </s-page>
+  );
+}
+
+function ReviewBadgePreview({ rating, count }) {
+  const normalizedRating = Number(rating);
+  if (!Number.isFinite(normalizedRating) || normalizedRating < 0 || normalizedRating > 5) return "-";
+
+  const normalizedCount = Number(count);
+  const countLabel = Number.isInteger(normalizedCount) && normalizedCount > 0
+    ? ` (${normalizedCount.toLocaleString()} reviews)`
+    : "";
+
+  return (
+    <span
+      aria-label={`Amazon rating ${normalizedRating.toFixed(1)} out of 5${countLabel}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "4px",
+        fontSize: "12px",
+        color: "#6d7175",
+        whiteSpace: "nowrap",
+      }}
+    >
+      <span style={{ color: "#b7791f", fontWeight: "bold" }}>★ {normalizedRating.toFixed(1)}</span>
+      {countLabel && <span>{countLabel}</span>}
+    </span>
   );
 }
 
