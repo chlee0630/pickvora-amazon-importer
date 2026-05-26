@@ -48,7 +48,8 @@ export async function importASINs(asins, shop, accessToken, overrideBlocks = fal
         where: { asin: trimmed },
       });
       if (existing) {
-        results.push({ asin: trimmed, status: "skipped", message: "Already imported" });
+        await syncProduct(existing, shop, accessToken);
+        results.push({ asin: trimmed, status: "success", message: "Existing product updated" });
         continue;
       }
 

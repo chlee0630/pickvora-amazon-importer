@@ -712,3 +712,41 @@ Production safety is highest priority.
 
 
 
+\---
+
+
+
+Current completed features:
+
+\- Operations Dashboard
+
+\- Admin Retry Tools
+
+\- Manual Review UI
+
+\- Retry-safe workers
+
+\- DLQ monitoring
+
+\- Tracking polling
+
+\- Fulfillment sync
+
+
+
+\---
+
+Important:
+
+\- Minimal modification policy
+
+\- Production-safe only
+
+\- No unnecessary refactoring
+
+\- Preserve async architecture
+
+\- Preserve idempotency
+
+\- Preserve webhook enqueue architecture
+

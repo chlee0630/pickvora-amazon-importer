@@ -123,6 +123,8 @@ export async function createShopifyProduct(shop, accessToken, amazonData, settin
     await publishToOnlineStore(shop, accessToken, productId);
   }
 
+  await updateAmazonReviewMetafields(shop, accessToken, productId, amazonData);
+
   return {
     shopifyProductId: productId,
     shopifyVariantId: primaryVariantId,
@@ -168,7 +170,85 @@ export async function updateShopifyProduct(shop, accessToken, shopifyProductId, 
     });
   }
 
+  await updateAmazonReviewMetafields(shop, accessToken, shopifyProductId, amazonData);
+
   return { shopifyPrice };
+}
+
+async function updateAmazonReviewMetafields(shop, accessToken, productId, amazonData) {
+  const reviewMetafields = buildAmazonReviewMetafields(productId, amazonData);
+  if (reviewMetafields.length === 0) return;
+
+  try {
+    const res = await adminFetch(shop, accessToken, `
+      mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields { id namespace key value }
+          userErrors { field message }
+        }
+      }
+    `, { metafields: reviewMetafields });
+
+    const errors = res.data?.metafieldsSet?.userErrors || [];
+    if (errors.length) {
+      throw new Error(errors.map((error) => error.message).join(", "));
+    }
+
+    logReviewMetafieldEvent("shopify_review_metafields_updated", {
+      productId,
+      asin: amazonData.asin,
+      rating: amazonData.rating,
+      ratingsTotal: amazonData.ratingsTotal,
+    });
+  } catch (err) {
+    logReviewMetafieldEvent("shopify_review_metafields_failed", {
+      productId,
+      asin: amazonData.asin,
+      error: err?.message || String(err),
+    });
+  }
+}
+
+function buildAmazonReviewMetafields(productId, amazonData) {
+  if (!isValidRating(amazonData.rating)) return [];
+
+  const updatedAt = amazonData.reviewsUpdatedAt
+    ? new Date(amazonData.reviewsUpdatedAt)
+    : new Date();
+  const reviewCount = Number.isInteger(amazonData.ratingsTotal) && amazonData.ratingsTotal >= 0
+    ? amazonData.ratingsTotal
+    : 0;
+
+  return [
+    {
+      ownerId: productId,
+      namespace: "amazon_reviews",
+      key: "average_rating",
+      type: "number_decimal",
+      value: Number(amazonData.rating).toFixed(2),
+    },
+    {
+      ownerId: productId,
+      namespace: "amazon_reviews",
+      key: "review_count",
+      type: "number_integer",
+      value: String(reviewCount),
+    },
+    {
+      ownerId: productId,
+      namespace: "amazon_reviews",
+      key: "source",
+      type: "single_line_text_field",
+      value: "amazon",
+    },
+    {
+      ownerId: productId,
+      namespace: "amazon_reviews",
+      key: "updated_at",
+      type: "date_time",
+      value: updatedAt.toISOString(),
+    },
+  ];
 }
 
 async function createShopifyVariants(shop, accessToken, productId, variants) {
@@ -462,6 +542,11 @@ function buildDescription(amazonData, settings) {
     parts.push(`<p>${amazonData.description}</p>`);
   }
 
+  const ratingBadge = buildRatingBadge(amazonData);
+  if (ratingBadge) {
+    parts.push(ratingBadge);
+  }
+
   const bullets = safeParseJSON(amazonData.featureBullets, []);
   if (bullets.length > 0) {
     parts.push(`<ul>${bullets.map((b) => `<li>${b}</li>`).join("")}</ul>`);
@@ -500,6 +585,32 @@ function buildDescription(amazonData, settings) {
   }
 
   return parts.join("\n");
+}
+
+function buildRatingBadge(amazonData) {
+  if (!isValidRating(amazonData.rating)) return "";
+  const rating = Number(amazonData.rating).toFixed(1);
+  const count = Number.isInteger(amazonData.ratingsTotal) && amazonData.ratingsTotal > 0
+    ? ` (${Number(amazonData.ratingsTotal).toLocaleString()} reviews)`
+    : "";
+
+  return `
+<div style="display:inline-flex;align-items:center;gap:6px;margin:8px 0 14px;padding:6px 10px;border:1px solid #e1e3e5;border-radius:6px;background:#fff;font-size:14px;color:#202223;">
+  <span style="color:#b7791f;font-weight:700;">★ ${rating}</span><span>${count}</span>
+</div>`;
+}
+
+function isValidRating(value) {
+  const rating = Number(value);
+  return Number.isFinite(rating) && rating >= 0 && rating <= 5;
+}
+
+function logReviewMetafieldEvent(event, details) {
+  console.log(JSON.stringify({
+    event,
+    layer: "shopify_review_metafields",
+    ...details,
+  }));
 }
 
 function escHtml(str) {

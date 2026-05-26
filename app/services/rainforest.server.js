@@ -47,6 +47,7 @@ export async function fetchProductDetails(asin) {
   }));
 
   const variants = normalizeVariants(p);
+  const reviewSummary = normalizeReviewSummary(p);
 
   return {
     asin: p.asin,
@@ -68,8 +69,9 @@ export async function fetchProductDetails(asin) {
     mainImage: p.main_image?.link ?? images[0] ?? null,
     images: JSON.stringify(images),
     variants: JSON.stringify(variants),
-    rating: p.rating,
-    ratingsTotal: p.ratings_total,
+    rating: reviewSummary.rating,
+    ratingsTotal: reviewSummary.ratingsTotal,
+    reviewsUpdatedAt: reviewSummary.updatedAt,
     reviews: JSON.stringify(reviews),
     bestsellRank,
     amazonUrl: p.link,
@@ -205,6 +207,64 @@ function normalizeVariant(variant, product) {
     availability,
     isCurrent: Boolean(variant.is_current_product || variant.asin === product.asin),
   };
+}
+
+function normalizeReviewSummary(product) {
+  const rating = parseRating(product.rating);
+  const ratingsTotal = parseRatingsTotal(product.ratings_total);
+
+  if (rating == null) {
+    logReviewEvent("review_data_skipped", {
+      asin: product.asin,
+      reason: product.rating == null ? "missing_rating" : "invalid_rating",
+      rawRating: product.rating,
+    });
+  }
+
+  if (ratingsTotal == null) {
+    logReviewEvent("review_data_skipped", {
+      asin: product.asin,
+      reason: product.ratings_total == null ? "missing_ratings_total" : "invalid_ratings_total",
+      rawRatingsTotal: product.ratings_total,
+    });
+  }
+
+  if (rating != null || ratingsTotal != null) {
+    logReviewEvent("review_data_extracted", {
+      asin: product.asin,
+      rating,
+      ratingsTotal: ratingsTotal ?? 0,
+    });
+  }
+
+  return {
+    rating,
+    ratingsTotal: ratingsTotal ?? 0,
+    updatedAt: rating != null || ratingsTotal != null ? new Date() : null,
+  };
+}
+
+function parseRating(value) {
+  if (value == null || value === "") return null;
+  const rating = Number(value);
+  if (!Number.isFinite(rating) || rating < 0 || rating > 5) return null;
+  return Math.round(rating * 100) / 100;
+}
+
+function parseRatingsTotal(value) {
+  if (value == null || value === "") return null;
+  const normalized = typeof value === "string" ? value.replace(/,/g, "") : value;
+  const count = Number(normalized);
+  if (!Number.isInteger(count) || count < 0) return null;
+  return count;
+}
+
+function logReviewEvent(event, details) {
+  console.log(JSON.stringify({
+    event,
+    layer: "rainforest_reviews",
+    ...details,
+  }));
 }
 
 function getVariantAvailabilityText(variant) {

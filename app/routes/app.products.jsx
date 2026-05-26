@@ -98,6 +98,7 @@ export default function ProductsPage() {
                   <th style={{ padding: "10px 12px", textAlign: "left" }}>Title</th>
                   <th style={{ padding: "10px 12px", textAlign: "right" }}>Amazon $</th>
                   <th style={{ padding: "10px 12px", textAlign: "right" }}>Shopify $</th>
+                  <th style={{ padding: "10px 12px", textAlign: "center" }}>Rating</th>
                   <th style={{ padding: "10px 12px", textAlign: "center" }}>Margin</th>
                   <th style={{ padding: "10px 12px", textAlign: "center" }}>Status</th>
                   <th style={{ padding: "10px 12px", textAlign: "left" }}>Last Synced</th>
@@ -133,6 +134,14 @@ export default function ProductsPage() {
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: "bold" }}>
                         {p.shopifyPrice != null ? `$${p.shopifyPrice.toFixed(2)}` : "-"}
+                      </td>
+                      <td style={{ padding: "10px 12px", textAlign: "center" }}>
+                        {p.rating != null ? (
+                          <span style={{ fontSize: "12px", color: "#6d7175", whiteSpace: "nowrap" }}>
+                            ★ {Number(p.rating).toFixed(1)}
+                            {p.ratingsTotal > 0 ? ` (${p.ratingsTotal.toLocaleString()})` : ""}
+                          </span>
+                        ) : "-"}
                       </td>
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
                         {p.marginRate}%
