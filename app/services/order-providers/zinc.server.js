@@ -1,6 +1,7 @@
 const ZINC_API_BASE_URL = "https://api.zinc.io/v1";
 const DEFAULT_TIMEOUT_MS = 30000;
 import { trackApiCall } from "../monitoring/api-metrics.server.js";
+import { normalizeProviderError } from "../../utils/provider-errors.server.js";
 
 function getZincConfig() {
   // eslint-disable-next-line no-undef
@@ -39,7 +40,9 @@ async function zincFetch(path, { method = "GET", body, timeoutMs = DEFAULT_TIMEO
         const message = data?.message || data?.error || `Zinc API returned ${res.status}`;
         const error = new Error(message);
         error.statusCode = res.status;
+        error.code = data?.code || data?.error_code || `ZINC_${res.status}`;
         error.retryable = [429, 500, 502, 503].includes(res.status);
+        error.rawResponse = data;
         throw error;
       }
 
@@ -49,7 +52,7 @@ async function zincFetch(path, { method = "GET", body, timeoutMs = DEFAULT_TIMEO
         err.retryable = true;
         err.code = "TIMEOUT";
       }
-      throw err;
+      throw normalizeProviderError(err, "zinc");
     } finally {
       clearTimeout(timeout);
     }

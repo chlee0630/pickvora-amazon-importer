@@ -270,12 +270,30 @@ model ProviderOrder {
   shopifyFulfillmentId String?
   processingLockedAt DateTime?
   lastError         String?
+  providerFailureCode String?
+  providerFailureMessage String?
+  providerAttemptCount Int      @default(0)
+  providerLastAttemptAt DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   @@unique([shop, shopifyOrderId, provider])
   @@index([provider, providerOrderId])
   @@index([status, processingLockedAt])
+}
+
+model ProviderHealth {
+  id             String    @id @default(cuid())
+  providerName   String    @unique
+  status         String    @default("ACTIVE")
+  failureCount   Int       @default(0)
+  lastFailureAt  DateTime?
+  lastSuccessAt  DateTime?
+  disabledReason String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status])
 }
 
 model TrackingLog {

@@ -5,9 +5,11 @@ import {
   failOrderJob,
   enqueueTrackingPollJob,
 } from "../queues/order-queue.server.js";
-import { getOrderProvider } from "../services/order-providers/index.server.js";
+import { resolveOrderProvider } from "../services/order-providers/index.server.js";
+import { recordProviderFailure, recordProviderSuccess } from "../services/order-providers/provider-health.server.js";
 import { fetchShopifyOrder } from "../services/shopify-orders.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
+import { normalizeProviderError, logProviderEvent } from "../utils/provider-errors.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
@@ -16,6 +18,14 @@ const ORDER_LOCK_TTL_MS = 10 * 60 * 1000;
 let workerRunning = false;
 
 class PermanentOrderError extends Error {}
+class ProviderUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.retryable = false;
+    this.code = "PROVIDER_UNAVAILABLE";
+    this.manualReviewRequired = true;
+  }
+}
 
 export async function runOrderWorkerOnce() {
   if (workerRunning) return;
@@ -63,14 +73,70 @@ export function initOrderWorkers() {
 }
 
 async function processCreateOrderJob(job) {
-  const providerOrder = await acquireProviderOrderLock(job);
+  const existingProviderOrder = await findExistingProviderOrder(job);
+  if (existingProviderOrder?.providerOrderId) {
+    logProviderEvent("duplicate_provider_order_prevented", {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: existingProviderOrder.provider,
+      providerOrderId: existingProviderOrder.providerOrderId,
+    });
+    await enqueueTrackingPollJob({
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: existingProviderOrder.provider,
+      delayMs: 0,
+    });
+    return;
+  }
+  if (existingProviderOrder?.requestPayload) {
+    logProviderEvent("duplicate_provider_order_prevented", {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: existingProviderOrder.provider,
+      reason: "existing_provider_request_payload",
+    });
+    await markProviderManualReview(job, {
+      provider: existingProviderOrder.provider,
+      code: "EXISTING_PROVIDER_REQUEST",
+      message: "Existing provider request found without provider order id",
+    });
+    throw new ProviderUnavailableError("Existing provider request found without provider order id");
+  }
+
+  const selected = await resolveOrderProvider({ preferredProvider: job.provider });
+  if (!selected.provider) {
+    await markProviderManualReview(job, {
+      provider: job.provider,
+      code: "NO_PROVIDER_AVAILABLE",
+      message: "No enabled order provider is available",
+    });
+    logProviderEvent("manual_review_fallback", {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      reason: "no_provider_available",
+    });
+    throw new ProviderUnavailableError("No enabled order provider is available");
+  }
+
+  if (selected.failoverAttempted) {
+    logProviderEvent("failover_attempted", {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      fromProvider: job.provider,
+      toProvider: selected.providerName,
+    });
+  }
+
+  const providerJob = { ...job, provider: selected.providerName };
+  const providerOrder = await acquireProviderOrderLock(providerJob);
   if (!providerOrder) {
-    logWorkerEvent("order_processing_lock_busy", job);
+    logWorkerEvent("order_processing_lock_busy", providerJob);
     throw retryableError("Order processing lock is held by another worker", "LOCKED");
   }
 
   if (providerOrder.providerOrderId) {
-    logWorkerEvent("provider_order_duplicate_skipped", job, {
+    logWorkerEvent("provider_order_duplicate_skipped", providerJob, {
       providerOrderId: providerOrder.providerOrderId,
     });
     return;
@@ -81,26 +147,44 @@ async function processCreateOrderJob(job) {
   validateOrder(order);
 
   const orderInput = await buildProviderOrderInput(job.shop, order);
-  const provider = getOrderProvider(job.provider);
-  const result = await provider.createOrder(orderInput);
+  let result;
+  try {
+    result = await selected.provider.createOrder(orderInput);
+  } catch (err) {
+    const normalizedError = normalizeProviderError(err, selected.providerName);
+    await recordProviderFailure(selected.providerName, normalizedError);
+    await updateProviderFailure(providerOrder.id, normalizedError);
+    logProviderEvent(normalizedError.retryable ? "provider_retryable_failure" : "provider_permanent_failure", {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: selected.providerName,
+      code: normalizedError.code,
+      retryable: normalizedError.retryable,
+      permanent: normalizedError.permanent,
+    });
+    throw normalizedError;
+  }
 
   if (!result.providerOrderId) {
     throw new Error("Provider did not return an order id");
   }
 
+  await recordProviderSuccess(selected.providerName);
   await prisma.providerOrder.update({
     where: { id: providerOrder.id },
     data: {
       providerOrderId: result.providerOrderId,
-      status: "ZINC_SUBMITTED",
+      status: selected.providerName === "zinc" ? "ZINC_SUBMITTED" : "ORDERED",
       requestPayload: JSON.stringify(result.requestPayload || {}),
       responsePayload: JSON.stringify(result.responsePayload || {}),
       processingLockedAt: null,
       lastError: null,
+      providerFailureCode: null,
+      providerFailureMessage: null,
     },
   });
 
-  logWorkerEvent("provider_order_submitted", job, {
+  logWorkerEvent("provider_order_submitted", providerJob, {
     providerOrderId: result.providerOrderId,
     providerStatus: result.status || "submitted",
   });
@@ -108,7 +192,7 @@ async function processCreateOrderJob(job) {
   await enqueueTrackingPollJob({
     shop: job.shop,
     shopifyOrderId: job.shopifyOrderId,
-    provider: job.provider,
+    provider: selected.providerName,
   });
 }
 
@@ -148,6 +232,8 @@ async function acquireProviderOrderLock(job) {
       status: "processing",
       processingLockedAt: now,
       lastError: null,
+      providerAttemptCount: { increment: 1 },
+      providerLastAttemptAt: now,
     },
   });
 
@@ -158,17 +244,77 @@ async function acquireProviderOrderLock(job) {
 async function releaseProviderOrderLock(job, error) {
   const message = error?.message || String(error);
   const retryable = isRetryableError(error);
+  const provider = error?.provider || job.provider;
+  const normalizedError = normalizeProviderError(error, provider);
   await prisma.providerOrder.updateMany({
     where: {
       shop: job.shop,
       shopifyOrderId: job.shopifyOrderId,
-      provider: job.provider,
+      provider,
       providerOrderId: null,
     },
     data: {
-      status: retryable ? "pending" : "FAILED",
+      status: error?.manualReviewRequired ? "MANUAL_REVIEW" : retryable ? "pending" : "FAILED",
       processingLockedAt: null,
       lastError: message.slice(0, 1000),
+      providerFailureCode: normalizedError.code,
+      providerFailureMessage: normalizedError.message.slice(0, 1000),
+    },
+  });
+}
+
+async function findExistingProviderOrder(job) {
+  return prisma.providerOrder.findFirst({
+    where: {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      OR: [
+        { providerOrderId: { not: null } },
+        { requestPayload: { not: null } },
+      ],
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+}
+
+async function markProviderManualReview(job, failure) {
+  await prisma.providerOrder.upsert({
+    where: {
+      shop_shopifyOrderId_provider: {
+        shop: job.shop,
+        shopifyOrderId: job.shopifyOrderId,
+        provider: failure.provider || job.provider,
+      },
+    },
+    create: {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: failure.provider || job.provider,
+      status: "MANUAL_REVIEW",
+      lastError: failure.message,
+      providerFailureCode: failure.code,
+      providerFailureMessage: failure.message,
+      providerAttemptCount: 0,
+      providerLastAttemptAt: new Date(),
+    },
+    update: {
+      status: "MANUAL_REVIEW",
+      processingLockedAt: null,
+      lastError: failure.message,
+      providerFailureCode: failure.code,
+      providerFailureMessage: failure.message,
+      providerLastAttemptAt: new Date(),
+    },
+  });
+}
+
+async function updateProviderFailure(providerOrderId, normalizedError) {
+  await prisma.providerOrder.update({
+    where: { id: providerOrderId },
+    data: {
+      providerFailureCode: normalizedError.code,
+      providerFailureMessage: normalizedError.message.slice(0, 1000),
+      providerLastAttemptAt: new Date(),
     },
   });
 }
