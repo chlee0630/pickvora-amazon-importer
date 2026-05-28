@@ -47,6 +47,21 @@ const apiColumns = [
   { key: "createdAt", label: "Time", render: (row) => formatDate(row.createdAt) },
 ];
 
+const fulfillmentExceptionColumns = [
+  { key: "exceptionType", label: "Exception" },
+  { key: "severity", label: "Severity" },
+  { key: "shopifyOrderId", label: "Shopify order" },
+  { key: "status", label: "Status" },
+  { key: "source", label: "Source" },
+  { key: "message", label: "Message" },
+  { key: "createdAt", label: "Detected", render: (row) => formatDate(row.createdAt) },
+];
+
+const fulfillmentReasonColumns = [
+  { key: "reason", label: "Reason" },
+  { key: "count", label: "Count" },
+];
+
 export default function OperationsDashboardPage({ dashboard, filters }) {
   const fetcher = useFetcher();
   const actionResult = fetcher.data;
@@ -119,6 +134,36 @@ export default function OperationsDashboardPage({ dashboard, filters }) {
         />
       </s-section>
 
+      <s-section heading="Fulfillment exception analytics">
+        <SummaryGrid
+          items={[
+            { label: "Total fulfillment exceptions", value: dashboard.fulfillmentExceptions.totalExceptions, tone: "critical" },
+            { label: "Invalid tracking", value: dashboard.fulfillmentExceptions.invalidTrackingCount, tone: "critical" },
+            { label: "Duplicate skips", value: dashboard.fulfillmentExceptions.duplicateFulfillmentPreventionCount },
+            { label: "Shopify API failures", value: dashboard.fulfillmentExceptions.shopifyFulfillmentApiFailureCount, tone: "critical" },
+            { label: "Tracking not fulfilled", value: dashboard.fulfillmentExceptions.trackingReceivedNotFulfilledCount, tone: "critical" },
+            { label: "Delayed fulfillment", value: dashboard.fulfillmentExceptions.delayedFulfillmentCount, tone: "critical" },
+            { label: "Carrier issues", value: dashboard.fulfillmentExceptions.carrierIssueCount, tone: "critical" },
+            { label: "Manual review", value: dashboard.fulfillmentExceptions.manualReviewFulfillmentCount, tone: "critical" },
+          ]}
+        />
+        <div style={{ marginTop: "12px" }}>
+          <DataTable
+            columns={fulfillmentReasonColumns}
+            rows={withIds(dashboard.fulfillmentExceptions.failureReasons, "reason")}
+            emptyMessage="No fulfillment exception reasons found."
+          />
+        </div>
+        <div style={{ marginTop: "12px" }}>
+          <DataTable
+            columns={fulfillmentExceptionColumns}
+            rows={dashboard.fulfillmentExceptionDetails.rows}
+            emptyMessage="No fulfillment exceptions found."
+          />
+          <PaginationControls filters={filters} total={dashboard.fulfillmentExceptionDetails.total} />
+        </div>
+      </s-section>
+
       <s-section heading="Worker health summary">
         <SummaryGrid
           items={[
@@ -189,6 +234,10 @@ export default function OperationsDashboardPage({ dashboard, filters }) {
 
 function valueFor(analytics, metricName) {
   return analytics[metricName] ?? 0;
+}
+
+function withIds(rows, key) {
+  return rows.map((row) => ({ ...row, id: row[key] }));
 }
 
 function ManualReviewActions({ row, fetcher }) {

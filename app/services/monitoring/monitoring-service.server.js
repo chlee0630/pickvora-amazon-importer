@@ -20,6 +20,7 @@ const PERSISTENT_EVENT_TYPES = new Set([
   "worker_timeout",
   "worker_crash_recovery",
   "fulfillment_failure",
+  "fulfillment_duplicate_prevented",
   "worker_heartbeat",
 ]);
 
