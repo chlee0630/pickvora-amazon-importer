@@ -4,6 +4,7 @@ import { useFetcher } from "react-router";
 import {
   DashboardFilters,
   DataTable,
+  HealthSummary,
   PaginationControls,
   SummaryGrid,
   formatDate,
@@ -77,6 +78,10 @@ export default function OperationsDashboardPage({ dashboard, filters }) {
       )}
 
       <DashboardFilters filters={filters} />
+
+      <s-section heading="Automated health monitoring">
+        <HealthSummary health={dashboard.healthSummary} />
+      </s-section>
 
       <s-section heading="Operations overview">
         <SummaryGrid

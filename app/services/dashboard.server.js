@@ -1,6 +1,7 @@
 import prisma from "../db.server.js";
 import { getAllowedAdminActions } from "./admin-order-actions.server.js";
 import { buildDateWhere, redactDashboardText } from "../utils/dashboard-filters.server.js";
+import { getDashboardHealthSummary } from "./monitoring/health-monitor.service.js";
 
 const ANALYTICS_METRICS = [
   "orders.total_processed",
@@ -17,13 +18,14 @@ const ANALYTICS_METRICS = [
 
 export async function getOperationsDashboard(shop, filters) {
   try {
-    const [overview, queue, fulfillment, workers, apiFailures, analytics, lists] = await Promise.all([
+    const [overview, queue, fulfillment, workers, apiFailures, analytics, healthSummary, lists] = await Promise.all([
       getOrderOverview(shop, filters),
       getQueueSummary(shop, filters),
       getFulfillmentSummary(shop, filters),
       getWorkerSummary(shop, filters),
       getApiFailureSummary(shop, filters),
       getAnalyticsSummary(filters),
+      getDashboardHealthSummary({ shop }),
       getOperationalLists(shop, filters),
     ]);
 
@@ -34,6 +36,7 @@ export async function getOperationsDashboard(shop, filters) {
       workers,
       apiFailures,
       analytics,
+      healthSummary,
       ...lists,
     };
   } catch (err) {

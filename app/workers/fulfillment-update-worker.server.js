@@ -14,6 +14,7 @@ import { classifyFailure } from "../utils/failure-classifier.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 import { recordFulfillmentMetric } from "../services/monitoring/monitoring-service.server.js";
+import { recordWorkerHeartbeat } from "../services/monitoring/health-monitor.service.js";
 
 const JOB_TIMEOUT_MS = 30000;
 const FULFILLMENT_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -25,6 +26,9 @@ class PermanentFulfillmentError extends Error {}
 export async function runFulfillmentUpdateWorkerOnce() {
   if (workerRunning) return;
   workerRunning = true;
+  recordWorkerHeartbeat("fulfillment_update_worker").catch((err) =>
+    console.error("Fulfillment update worker heartbeat error:", err?.message || err)
+  );
 
   try {
     const { fulfillmentWorkerConcurrency } = getScalingConfig();
@@ -40,6 +44,9 @@ export async function runFulfillmentUpdateWorkerOnce() {
 async function drainFulfillmentJobs() {
   let job = await claimNextOrderJob({ types: ["fulfillment.update"] });
   while (job) {
+    recordWorkerHeartbeat("fulfillment_update_worker", { shop: job.shop }).catch((err) =>
+      console.error("Fulfillment update worker heartbeat error:", err?.message || err)
+    );
     try {
       await trackWorkerJob("fulfillment_update_worker", job, async () => {
         await withTimeout(processFulfillmentJob(job), JOB_TIMEOUT_MS);

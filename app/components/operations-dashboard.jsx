@@ -38,6 +38,59 @@ export function SummaryGrid({ items }) {
   );
 }
 
+export function HealthSummary({ health }) {
+  if (!health) return null;
+  const components = health.components || {};
+  const items = [
+    { key: "queue", label: "Queue", value: components.queue?.status || "UNKNOWN" },
+    { key: "workers", label: "Workers", value: components.workers?.status || "UNKNOWN" },
+    { key: "provider", label: "Provider", value: components.provider?.status || "UNKNOWN" },
+    { key: "apiFailures", label: "API failures", value: components.apiFailures?.status || "UNKNOWN" },
+    { key: "dlq", label: "DLQ", value: components.dlq?.status || "UNKNOWN" },
+    { key: "trackingPolling", label: "Tracking polling", value: components.trackingPolling?.status || "UNKNOWN" },
+  ];
+
+  return (
+    <s-stack gap="base">
+      <SummaryGrid
+        items={[
+          {
+            label: "Overall system status",
+            value: health.overallStatus || "UNKNOWN",
+            tone: toneForStatus(health.overallStatus),
+          },
+          {
+            label: "Last checked",
+            value: formatDate(health.lastCheckedAt),
+          },
+        ]}
+      />
+      <s-box padding="none" borderWidth="base" borderRadius="base" background="default">
+        <div style={{ overflowX: "auto" }}>
+          <table style={tableStyle}>
+            <thead>
+              <tr style={{ background: "#f6f6f7" }}>
+                <th style={{ ...cellStyle, textAlign: "left", fontWeight: "700" }}>Component</th>
+                <th style={{ ...cellStyle, textAlign: "left", fontWeight: "700" }}>Status</th>
+                <th style={{ ...cellStyle, textAlign: "left", fontWeight: "700" }}>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.key}>
+                  <td style={cellStyle}>{item.label}</td>
+                  <td style={{ ...cellStyle, color: statusColor(item.value), fontWeight: "700" }}>{item.value}</td>
+                  <td style={cellStyle}>{componentMessage(components[item.key])}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </s-box>
+    </s-stack>
+  );
+}
+
 export function DashboardFilters({ filters }) {
   return (
     <s-section heading="Filters">
@@ -178,6 +231,26 @@ function dateInputValue(value) {
 
 function valueOrDash(value) {
   return value === null || value === undefined || value === "" ? "-" : value;
+}
+
+function toneForStatus(status) {
+  return status === "CRITICAL" || status === "WARNING" ? "critical" : undefined;
+}
+
+function statusColor(status) {
+  if (status === "CRITICAL") return "#8e1f0b";
+  if (status === "WARNING") return "#8a6116";
+  if (status === "OK") return "#0a7f4f";
+  return "#6d7175";
+}
+
+function componentMessage(component) {
+  if (!component) return "-";
+  if (component.message) return component.message;
+  if (component.category === "api_failure") return `${component.providers?.length || 0} provider rows checked`;
+  if (component.category === "provider") return `${component.providers?.length || 0} providers checked`;
+  if (component.category === "worker_heartbeat") return `${component.workers?.length || 0} workers checked`;
+  return "-";
 }
 
 const filterLabelStyle = {

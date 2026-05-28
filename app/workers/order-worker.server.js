@@ -12,6 +12,7 @@ import { classifyFailure } from "../utils/failure-classifier.server.js";
 import { normalizeProviderError, logProviderEvent } from "../utils/provider-errors.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
+import { recordWorkerHeartbeat } from "../services/monitoring/health-monitor.service.js";
 
 const JOB_TIMEOUT_MS = 45000;
 const ORDER_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -31,6 +32,9 @@ class ProviderUnavailableError extends Error {
 export async function runOrderWorkerOnce() {
   if (workerRunning) return;
   workerRunning = true;
+  recordWorkerHeartbeat("order_worker").catch((err) =>
+    console.error("Order worker heartbeat error:", err?.message || err)
+  );
 
   try {
     const { orderWorkerConcurrency } = getScalingConfig();
@@ -46,6 +50,9 @@ export async function runOrderWorkerOnce() {
 async function drainOrderJobs() {
   let job = await claimNextOrderJob({ types: ["order.create"] });
   while (job) {
+    recordWorkerHeartbeat("order_worker", { shop: job.shop }).catch((err) =>
+      console.error("Order worker heartbeat error:", err?.message || err)
+    );
     try {
       await trackWorkerJob("order_worker", job, async () => {
         if (job.type !== "order.create") {

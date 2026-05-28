@@ -10,6 +10,7 @@ import { getOrderProvider } from "../services/order-providers/index.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
+import { recordWorkerHeartbeat } from "../services/monitoring/health-monitor.service.js";
 
 const JOB_TIMEOUT_MS = 30000;
 const TRACKING_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -22,6 +23,9 @@ class PermanentTrackingError extends Error {}
 export async function runTrackingPollingWorkerOnce() {
   if (workerRunning) return;
   workerRunning = true;
+  recordWorkerHeartbeat("tracking_polling_worker").catch((err) =>
+    console.error("Tracking polling worker heartbeat error:", err?.message || err)
+  );
 
   try {
     const { trackingWorkerConcurrency } = getScalingConfig();
@@ -37,6 +41,9 @@ export async function runTrackingPollingWorkerOnce() {
 async function drainTrackingJobs() {
   let job = await claimNextOrderJob({ types: ["tracking.poll"] });
   while (job) {
+    recordWorkerHeartbeat("tracking_polling_worker", { shop: job.shop }).catch((err) =>
+      console.error("Tracking polling worker heartbeat error:", err?.message || err)
+    );
     try {
       await trackWorkerJob("tracking_polling_worker", job, async () => {
         const shouldComplete = await withTimeout(processTrackingPollJob(job), JOB_TIMEOUT_MS);

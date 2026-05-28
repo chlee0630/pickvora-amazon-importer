@@ -20,6 +20,7 @@ const PERSISTENT_EVENT_TYPES = new Set([
   "worker_timeout",
   "worker_crash_recovery",
   "fulfillment_failure",
+  "worker_heartbeat",
 ]);
 
 export function recordMonitoringEvent(eventType, details = {}, options = {}) {
