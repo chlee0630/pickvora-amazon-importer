@@ -1,30 +1,16 @@
-const ZINC_API_BASE_URL = "https://api.zinc.io/v1";
-const DEFAULT_TIMEOUT_MS = 30000;
 import { trackApiCall } from "../monitoring/api-metrics.server.js";
 import { normalizeProviderError } from "../../utils/provider-errors.server.js";
+import { getZincConfig, requireZincApiKey } from "../../config/zinc.server.js";
 
-function getZincConfig() {
-  // eslint-disable-next-line no-undef
-  const apiKey = process.env.ZINC_API_KEY;
-  if (!apiKey) throw new Error("ZINC_API_KEY is not configured");
-
-  return {
-    apiKey,
-    // eslint-disable-next-line no-undef
-    retailer: process.env.ZINC_RETAILER || "amazon",
-    // eslint-disable-next-line no-undef
-    maxPriceCents: Number(process.env.ZINC_MAX_PRICE_CENTS || 0) || null,
-  };
-}
-
-async function zincFetch(path, { method = "GET", body, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+async function zincFetch(path, { method = "GET", body, timeoutMs } = {}) {
   return trackApiCall("zinc", `${method} ${path}`, async () => {
-    const { apiKey } = getZincConfig();
+    const zincConfig = getZincConfig();
+    const apiKey = requireZincApiKey(zincConfig.apiKey);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs || zincConfig.timeoutMs);
 
     try {
-      const res = await fetch(`${ZINC_API_BASE_URL}${path}`, {
+      const res = await fetch(`${zincConfig.baseUrl}${path}`, {
         method,
         headers: {
           "Content-Type": "application/json",
@@ -83,6 +69,7 @@ export function createZincProvider() {
 
     async createOrder(orderInput) {
       const config = getZincConfig();
+      requireZincApiKey(config.apiKey);
       const payload = {
         retailer: config.retailer,
         products: orderInput.items.map((item) => ({
