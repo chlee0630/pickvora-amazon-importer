@@ -8,11 +8,17 @@ import {
 import { resolveOrderProvider } from "../services/order-providers/index.server.js";
 import { recordProviderFailure, recordProviderSuccess } from "../services/order-providers/provider-health.server.js";
 import { fetchShopifyOrder } from "../services/shopify-orders.server.js";
+import {
+  buildZincCreatePayload,
+  buildZincIdempotencyKey,
+} from "../services/order-providers/zinc.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
 import { normalizeProviderError, logProviderEvent } from "../utils/provider-errors.server.js";
+import { maskSensitivePayload } from "../utils/failure-audit-log.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 import { recordWorkerHeartbeat } from "../services/monitoring/health-monitor.service.js";
+import { recordMonitoringEvent } from "../services/monitoring/monitoring-service.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
 const ORDER_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -90,22 +96,29 @@ export function initOrderWorkers() {
 
 async function processCreateOrderJob(job) {
   const existingProviderOrder = await findExistingProviderOrder(job);
-  if (existingProviderOrder?.providerOrderId) {
-    logProviderEvent("duplicate_provider_order_prevented", {
-      shop: job.shop,
-      shopifyOrderId: job.shopifyOrderId,
-      provider: existingProviderOrder.provider,
-      providerOrderId: existingProviderOrder.providerOrderId,
-    });
-    await enqueueTrackingPollJob({
-      shop: job.shop,
-      shopifyOrderId: job.shopifyOrderId,
-      provider: existingProviderOrder.provider,
-      delayMs: 0,
-    });
-    return;
-  }
-  if (existingProviderOrder?.requestPayload) {
+  if (shouldSkipZincOrderSubmission(existingProviderOrder)) {
+    if (existingProviderOrder?.providerOrderId) {
+      logProviderEvent("duplicate_provider_order_prevented", {
+        shop: job.shop,
+        shopifyOrderId: job.shopifyOrderId,
+        provider: existingProviderOrder.provider,
+        providerOrderId: existingProviderOrder.providerOrderId,
+      });
+      if (existingProviderOrder.status === "ZINC_DRY_RUN") {
+        logWorkerEvent("dry_run_provider_order_skipped", job, {
+          providerOrderId: existingProviderOrder.providerOrderId,
+        });
+        return;
+      }
+      await enqueueTrackingPollJob({
+        shop: job.shop,
+        shopifyOrderId: job.shopifyOrderId,
+        provider: existingProviderOrder.provider,
+        delayMs: 0,
+      });
+      return;
+    }
+
     logProviderEvent("duplicate_provider_order_prevented", {
       shop: job.shop,
       shopifyOrderId: job.shopifyOrderId,
@@ -155,6 +168,12 @@ async function processCreateOrderJob(job) {
     logWorkerEvent("provider_order_duplicate_skipped", providerJob, {
       providerOrderId: providerOrder.providerOrderId,
     });
+    if (providerOrder.status === "ZINC_DRY_RUN") {
+      logWorkerEvent("dry_run_provider_order_skipped", providerJob, {
+        providerOrderId: providerOrder.providerOrderId,
+      });
+      return;
+    }
     return;
   }
 
@@ -163,13 +182,33 @@ async function processCreateOrderJob(job) {
   validateOrder(order);
 
   const orderInput = await buildProviderOrderInput(job.shop, order);
+  const idempotencyKey = selected.providerName === "zinc"
+    ? buildZincIdempotencyKey(job.shop, job.shopifyOrderId)
+    : null;
+  if (selected.providerName === "zinc") {
+    await persistZincSubmitIntent(providerOrder.id, orderInput, idempotencyKey);
+  }
+
   let result;
   try {
-    result = await selected.provider.createOrder(orderInput);
+    result = await selected.provider.createOrder(
+      selected.providerName === "zinc"
+        ? { ...orderInput, idempotencyKey }
+        : orderInput
+    );
   } catch (err) {
     const normalizedError = normalizeProviderError(err, selected.providerName);
     await recordProviderFailure(selected.providerName, normalizedError);
     await updateProviderFailure(providerOrder.id, normalizedError);
+    recordMonitoringEvent("zinc_api_error", {
+      shop: job.shop,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: selected.providerName,
+      code: normalizedError.code,
+      retryable: normalizedError.retryable,
+      manualReviewRequired: normalizedError.manualReviewRequired,
+      failureReason: normalizedError.message,
+    }, { persist: true });
     logProviderEvent(normalizedError.retryable ? "provider_retryable_failure" : "provider_permanent_failure", {
       shop: job.shop,
       shopifyOrderId: job.shopifyOrderId,
@@ -186,13 +225,16 @@ async function processCreateOrderJob(job) {
   }
 
   await recordProviderSuccess(selected.providerName);
+  const isDryRunResult = isDryRunProviderSubmission(result);
   await prisma.providerOrder.update({
     where: { id: providerOrder.id },
     data: {
       providerOrderId: result.providerOrderId,
-      status: selected.providerName === "zinc" ? "ZINC_SUBMITTED" : "ORDERED",
-      requestPayload: JSON.stringify(result.requestPayload || {}),
-      responsePayload: JSON.stringify(result.responsePayload || {}),
+      status: selected.providerName === "zinc"
+        ? (isDryRunResult ? "ZINC_DRY_RUN" : "ZINC_SUBMITTED")
+        : "ORDERED",
+      requestPayload: JSON.stringify(maskSensitivePayload(result.requestPayload || {})),
+      responsePayload: JSON.stringify(maskSensitivePayload(result.responsePayload || {})),
       processingLockedAt: null,
       lastError: null,
       providerFailureCode: null,
@@ -203,7 +245,15 @@ async function processCreateOrderJob(job) {
   logWorkerEvent("provider_order_submitted", providerJob, {
     providerOrderId: result.providerOrderId,
     providerStatus: result.status || "submitted",
+    dryRun: Boolean(isDryRunResult),
   });
+
+  if (isDryRunResult) {
+    logWorkerEvent("dry_run_tracking_poll_skipped", providerJob, {
+      providerOrderId: result.providerOrderId,
+    });
+    return;
+  }
 
   await enqueueTrackingPollJob({
     shop: job.shop,
@@ -328,10 +378,36 @@ async function updateProviderFailure(providerOrderId, normalizedError) {
   await prisma.providerOrder.update({
     where: { id: providerOrderId },
     data: {
+      status: getProviderFailureStatus(normalizedError),
       providerFailureCode: normalizedError.code,
       providerFailureMessage: normalizedError.message.slice(0, 1000),
+      lastError: buildProviderFailureSummary(normalizedError),
+      responsePayload: normalizedError.raw_response
+        ? JSON.stringify(maskSensitivePayload(normalizedError.raw_response))
+        : null,
+      processingLockedAt: null,
       providerLastAttemptAt: new Date(),
     },
+  });
+}
+
+async function persistZincSubmitIntent(providerOrderId, orderInput, idempotencyKey) {
+  const requestPayload = buildZincCreatePayload(orderInput, idempotencyKey);
+  await prisma.providerOrder.update({
+    where: { id: providerOrderId },
+    data: {
+      status: "SUBMITTING",
+      requestPayload: JSON.stringify(maskSensitivePayload(requestPayload)),
+      providerLastAttemptAt: new Date(),
+      lastError: null,
+    },
+  });
+
+  logWorkerEvent("zinc_submit_intent_created", {
+    providerOrderId,
+    shop: orderInput.shop,
+    shopifyOrderId: orderInput.shopifyOrderId,
+    idempotencyKey,
   });
 }
 
@@ -385,18 +461,34 @@ async function mapOrderItemsToAsins(shop, order) {
 
   return lineItems
     .map((line) => {
+      const matchedProduct = importedProducts.find((product) => product.shopifyVariantId === line.variant?.id)
+        || importedProducts.find((product) => product.shopifyProductId === line.product?.id)
+        || importedProducts.find((product) => product.asin === normalizeAsin(line.sku))
+        || importedProducts.find((product) => product.asin === normalizeAsin(line.variant?.metafield?.value));
       const asin = normalizeAsin(line.sku)
         || normalizeAsin(line.variant?.metafield?.value)
-        || importedProducts.find((product) => product.shopifyVariantId === line.variant?.id)?.asin
-        || importedProducts.find((product) => product.shopifyProductId === line.product?.id)?.asin;
-      if (!asin) return null;
+        || matchedProduct?.asin;
+      if (!asin || !matchedProduct) return null;
       return {
         asin,
         quantity: line.quantity,
         shopifyLineItemId: line.id,
+        amazonUrl: matchedProduct.amazonUrl || null,
+        maxPriceCents: toPriceCents(
+          matchedProduct.salePrice ?? matchedProduct.price,
+          matchedProduct.shippingPrice
+        ),
       };
     })
     .filter(Boolean);
+}
+
+function toPriceCents(value, shippingValue = 0) {
+  const amount = Number(value);
+  const shippingAmount = Number(shippingValue || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  if (!Number.isFinite(shippingAmount) || shippingAmount < 0) return null;
+  return Math.round((amount + shippingAmount) * 100);
 }
 
 function buildZincAddress(address) {
@@ -452,4 +544,24 @@ function logWorkerEvent(event, job, details = {}) {
     attempts: job.attempts,
     ...details,
   }));
+}
+
+export function shouldSkipZincOrderSubmission(providerOrder) {
+  return Boolean(providerOrder?.providerOrderId || providerOrder?.requestPayload);
+}
+
+export function isDryRunProviderSubmission(result) {
+  return Boolean(result?.dryRun || result?.status === "dry_run");
+}
+
+export function getProviderFailureStatus(normalizedError) {
+  if (normalizedError?.manualReviewRequired) return "MANUAL_REVIEW";
+  if (normalizedError?.retryable) return "pending";
+  return "FAILED";
+}
+
+export function buildProviderFailureSummary(normalizedError) {
+  const code = normalizedError?.code || "PROVIDER_ERROR";
+  const message = normalizedError?.message || "Provider submission failed";
+  return `${code}: ${message}`.slice(0, 1000);
 }

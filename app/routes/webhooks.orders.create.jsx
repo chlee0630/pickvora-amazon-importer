@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { enqueueOrderProcessingJob } from "../queues/order-queue.server";
+import { maskSensitivePayload } from "../utils/failure-audit-log.server.js";
 
 export const action = async ({ request }) => {
   const webhookId = request.headers.get("x-shopify-webhook-id");
@@ -24,7 +25,7 @@ export const action = async ({ request }) => {
         webhookId,
         shopifyOrderId: "unknown",
         status: "ignored",
-        payload: JSON.stringify(payload || {}),
+        payload: JSON.stringify(maskSensitivePayload(payload || {})),
         error: "Missing Shopify order id",
       },
     });
@@ -33,7 +34,40 @@ export const action = async ({ request }) => {
 
   if (webhookId) {
     const existing = await db.orderWebhookLog.findUnique({ where: { webhookId } });
-    if (existing) return new Response();
+    if (existing) {
+      console.log(JSON.stringify({
+        event: "order_webhook_duplicate_skipped",
+        layer: "order_webhook",
+        reason: "webhook_id",
+        topic,
+        shop,
+        webhookId,
+        shopifyOrderId,
+      }));
+      return new Response();
+    }
+  }
+
+  const existingOrderJob = await db.orderQueueJob.findUnique({
+    where: {
+      shop_type_shopifyOrderId: {
+        shop,
+        type: "order.create",
+        shopifyOrderId,
+      },
+    },
+  });
+  if (existingOrderJob) {
+    console.log(JSON.stringify({
+      event: "order_webhook_duplicate_skipped",
+      layer: "order_webhook",
+      reason: "shopify_order_id",
+      topic,
+      shop,
+      webhookId,
+      shopifyOrderId,
+    }));
+    return new Response();
   }
 
   try {
@@ -44,7 +78,7 @@ export const action = async ({ request }) => {
         webhookId,
         shopifyOrderId,
         status: "enqueued",
-        payload: JSON.stringify(payload || {}),
+        payload: JSON.stringify(maskSensitivePayload(payload || {})),
       },
     });
   } catch (err) {

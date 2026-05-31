@@ -7,6 +7,7 @@ import {
   failOrderJob,
 } from "../queues/order-queue.server.js";
 import { getOrderProvider } from "../services/order-providers/index.server.js";
+import { recordMonitoringEvent } from "../services/monitoring/monitoring-service.server.js";
 import { classifyFailure } from "../utils/failure-classifier.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
@@ -130,18 +131,7 @@ async function processTrackingPollJob(job) {
   }
 
   if (!tracking.trackingNumber) {
-    logTrackingEvent("tracking_not_ready", job, {
-      providerOrderId: providerOrder.providerOrderId,
-      providerStatus: tracking.status,
-    });
-    await enqueueTrackingPollJob({
-      shop: job.shop,
-      shopifyOrderId: job.shopifyOrderId,
-      provider: job.provider,
-      delayMs: getTrackingPollIntervalMs(),
-      rescheduleExisting: true,
-    });
-    return false;
+    return handleTrackingNotReady(job, providerOrder, tracking);
   }
 
   validateTracking(tracking);
@@ -202,6 +192,65 @@ async function processTrackingPollJob(job) {
   });
 }
 
+export async function handleTrackingNotReady(job, providerOrder, tracking, deps = {}) {
+  const exhaustionMessage = "Tracking not received after max polling attempts";
+  const {
+    updateProviderOrder = async (data) => prisma.providerOrder.update({
+      where: { id: providerOrder.id },
+      data,
+    }),
+    enqueueTrackingPollJobFn = enqueueTrackingPollJob,
+    recordMonitoringEventFn = recordMonitoringEvent,
+    logTrackingEventFn = logTrackingEvent,
+  } = deps;
+
+  if (isTrackingPollingExhausted(job)) {
+    await updateProviderOrder({
+      status: "MANUAL_REVIEW",
+      providerFailureCode: "TRACKING_NOT_RECEIVED",
+      providerFailureMessage: exhaustionMessage,
+      lastError: exhaustionMessage,
+      processingLockedAt: null,
+    });
+
+    logTrackingEventFn("tracking_polling_exhausted", job, {
+      providerOrderId: providerOrder.providerOrderId,
+      providerStatus: tracking.status,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+    });
+    recordMonitoringEventFn("tracking_polling_exhausted", {
+      jobId: job.id,
+      shop: job.shop,
+      type: job.type,
+      shopifyOrderId: job.shopifyOrderId,
+      provider: job.provider,
+      providerOrderId: providerOrder.providerOrderId,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+      failureCategory: "TRACKING_TIMEOUT",
+      failureReason: exhaustionMessage,
+    });
+
+    throw new PermanentTrackingError(exhaustionMessage);
+  }
+
+  logTrackingEventFn("tracking_not_ready", job, {
+    providerOrderId: providerOrder.providerOrderId,
+    providerStatus: tracking.status,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+  });
+  await enqueueTrackingPollJobFn({
+    shop: job.shop,
+    shopifyOrderId: job.shopifyOrderId,
+    provider: job.provider,
+    delayMs: getTrackingPollIntervalMs(),
+    rescheduleExisting: true,
+  });
+  return false;
+}
+
 async function acquireTrackingLock(job) {
   const now = new Date();
   const staleLock = new Date(Date.now() - TRACKING_LOCK_TTL_MS);
@@ -246,6 +295,10 @@ function isEligibleForAutomaticPolling(providerOrder) {
   if (providerOrder.fulfillmentSyncedAt || providerOrder.status === "FULFILLED") return false;
   if (providerOrder.status === "MANUAL_REVIEW" || providerOrder.status === "FAILED") return false;
   return ELIGIBLE_POLLING_STATES.has(providerOrder.status);
+}
+
+export function isTrackingPollingExhausted(job) {
+  return Number(job?.attempts || 0) >= Number(job?.maxAttempts || 0);
 }
 
 function getTrackingPollIntervalMs() {

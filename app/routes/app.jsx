@@ -5,9 +5,9 @@ import { authenticate } from "../shopify.server";
 import { initAllSchedulers } from "../services/scheduler.server";
 import { initDefaultFilters } from "../services/filter.server";
 import { initOrderWorkers } from "../workers/order-worker.server";
-import { initTrackingPollingWorkers } from "../workers/tracking-polling-worker.server";
 import { initFulfillmentUpdateWorkers } from "../workers/fulfillment-update-worker.server";
 import { initAnalyticsAggregation } from "../services/analytics/analytics-service.server";
+import { bootstrapTrackingPollingWorker } from "../utils/worker-bootstrap.server";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -24,7 +24,7 @@ export const loader = async ({ request }) => {
       console.error("Filter init error:", err)
     );
     initOrderWorkers();
-    initTrackingPollingWorkers();
+    bootstrapTrackingPollingWorker();
     initFulfillmentUpdateWorkers();
     initAnalyticsAggregation();
   }
