@@ -1,0 +1,18 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "a137dfaba62773bd1df6539d20b6429b"
+name = "pickvora-amazon-importer-prod"
+application_url = "https://pickvora.115.68.177.198.nip.io"
+embedded = true
+
+[webhooks]
+api_version = "2026-04"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = ""
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = ["https://pickvora.115.68.177.198.nip.io/auth/callback"]
