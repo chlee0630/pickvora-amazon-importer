@@ -2,7 +2,6 @@ import prisma from "../db.server.js";
 import {
   claimNextOrderJob,
   completeOrderJob,
-  enqueueFulfillmentUpdateJob,
   enqueueTrackingPollJob,
   failOrderJob,
 } from "../queues/order-queue.server.js";
@@ -12,6 +11,7 @@ import { classifyFailure } from "../utils/failure-classifier.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 import { recordWorkerHeartbeat } from "../services/monitoring/health-monitor.service.js";
+import { processTrackingReceipt } from "../services/tracking/tracking-receipt.server.js";
 
 const JOB_TIMEOUT_MS = 30000;
 const TRACKING_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -136,59 +136,12 @@ async function processTrackingPollJob(job) {
 
   validateTracking(tracking);
 
-  const existingTracking = await findExistingTracking(job, tracking);
-  if (existingTracking) {
-    logTrackingEvent("tracking_log_duplicate_skipped", job, {
-      providerOrderId: providerOrder.providerOrderId,
-      trackingNumber: tracking.trackingNumber,
-      carrier: tracking.trackingCompany,
-    });
-    return;
-  }
-
-  await prisma.trackingLog.create({
-    data: {
-      shop: job.shop,
-      shopifyOrderId: job.shopifyOrderId,
-      provider: job.provider,
-      providerOrderId: providerOrder.providerOrderId,
-      trackingNumber: tracking.trackingNumber,
-      carrier: tracking.trackingCompany,
-      trackingUrl: tracking.trackingUrl,
-      status: "TRACKING_RECEIVED",
-      payload: JSON.stringify(tracking.responsePayload || {}),
-    },
-  });
-
-  await prisma.providerOrder.update({
-    where: { id: providerOrder.id },
-    data: {
-      status: "TRACKING_RECEIVED",
-      trackingNumber: tracking.trackingNumber,
-      trackingCarrier: tracking.trackingCompany,
-      trackingUrl: tracking.trackingUrl,
-      trackingReceivedAt: new Date(),
-      processingLockedAt: null,
-      lastError: null,
-    },
-  });
-
-  await enqueueFulfillmentUpdateJob({
-    shop: job.shop,
-    shopifyOrderId: job.shopifyOrderId,
-    provider: job.provider,
-    payload: {
-      providerOrderId: providerOrder.providerOrderId,
-      trackingNumber: tracking.trackingNumber,
-      carrier: tracking.trackingCompany,
-      trackingUrl: tracking.trackingUrl,
-    },
-  });
-
-  logTrackingEvent("tracking_received", job, {
-    providerOrderId: providerOrder.providerOrderId,
-    trackingNumber: tracking.trackingNumber,
-    carrier: tracking.trackingCompany,
+  await processTrackingReceipt({
+    job,
+    providerOrder,
+    tracking,
+    providerState,
+    source: "tracking.poll",
   });
 }
 
@@ -357,31 +310,6 @@ function validateTracking(tracking) {
   }
 }
 
-async function findExistingTracking(job, tracking) {
-  const existingProviderOrder = await prisma.providerOrder.findFirst({
-    where: {
-      shop: job.shop,
-      shopifyOrderId: job.shopifyOrderId,
-      provider: job.provider,
-      trackingNumber: tracking.trackingNumber,
-      trackingCarrier: tracking.trackingCompany,
-    },
-  });
-  if (existingProviderOrder?.trackingReceivedAt) return existingProviderOrder;
-
-  return prisma.trackingLog.findUnique({
-    where: {
-      shop_shopifyOrderId_provider_trackingNumber_carrier: {
-        shop: job.shop,
-        shopifyOrderId: job.shopifyOrderId,
-        provider: job.provider,
-        trackingNumber: tracking.trackingNumber,
-        carrier: tracking.trackingCompany,
-      },
-    },
-  });
-}
-
 function normalizeProviderState(status) {
   const normalized = String(status || "").toLowerCase();
   if (["failed", "cancelled", "canceled"].includes(normalized)) return "FAILED";
@@ -411,6 +339,10 @@ function isRetryableError(error) {
 }
 
 function logTrackingEvent(event, job, details = {}) {
+  const sanitizedDetails = { ...details };
+  if (sanitizedDetails.trackingNumber) {
+    sanitizedDetails.trackingNumber = maskTrackingNumber(sanitizedDetails.trackingNumber);
+  }
   console.log(JSON.stringify({
     event,
     layer: "tracking_polling_worker",
@@ -420,6 +352,12 @@ function logTrackingEvent(event, job, details = {}) {
     shopifyOrderId: job.shopifyOrderId,
     provider: job.provider,
     attempts: job.attempts,
-    ...details,
+    ...sanitizedDetails,
   }));
+}
+
+function maskTrackingNumber(value) {
+  const text = String(value || "");
+  if (text.length <= 4) return "[masked]";
+  return `${text.slice(0, 2)}***${text.slice(-2)}`;
 }

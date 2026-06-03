@@ -62,7 +62,7 @@ const fulfillmentReasonColumns = [
   { key: "count", label: "Count" },
 ];
 
-export default function OperationsDashboardPage({ dashboard, filters }) {
+export default function OperationsDashboardPage({ dashboard, filters, testTrackingInjectionEnabled }) {
   const fetcher = useFetcher();
   const actionResult = fetcher.data;
   const manualReviewColumns = [
@@ -90,6 +90,21 @@ export default function OperationsDashboardPage({ dashboard, filters }) {
           tone={actionResult.success ? "success" : "critical"}
           title={actionResult.success ? actionResult.message : actionResult.error}
         />
+      )}
+      {actionResult?.success && actionResult.order && (
+        <s-box padding="base" borderWidth="base" borderRadius="base" style={{ marginTop: "12px", background: "#f6f6f7" }}>
+          <div style={{ display: "grid", gap: "4px", fontSize: "13px" }}>
+            <div style={{ fontWeight: 700 }}>Test tracking injection result</div>
+            <div>Order: {actionResult.order.shopifyOrderId}</div>
+            <div>Provider order: {actionResult.order.providerOrderId}</div>
+            <div>Tracking status: {actionResult.order.status}</div>
+            <div>Tracking number: {actionResult.order.trackingNumber || "-"}</div>
+            <div>Carrier: {actionResult.order.trackingCarrier || "-"}</div>
+            <div>Tracking received at: {formatDate(actionResult.order.trackingReceivedAt)}</div>
+            <div>Fulfillment synced at: {formatDate(actionResult.order.fulfillmentSyncedAt)}</div>
+            <div>Shopify fulfillment ID: {actionResult.order.shopifyFulfillmentId || "-"}</div>
+          </div>
+        </s-box>
       )}
 
       <DashboardFilters filters={filters} />
@@ -228,6 +243,10 @@ export default function OperationsDashboardPage({ dashboard, filters }) {
           <DataTable columns={manualReviewColumns} rows={dashboard.manualReviewOrders} emptyMessage="No manual review orders found." />
         </div>
       </s-section>
+
+      {testTrackingInjectionEnabled && (
+        <TestTrackingInjectionSection fetcher={fetcher} />
+      )}
     </s-page>
   );
 }
@@ -318,9 +337,67 @@ function ActionForm({ fetcher, orderId, intent, label, disabled }) {
   );
 }
 
+function TestTrackingInjectionSection({ fetcher }) {
+  const isSubmitting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "inject_test_tracking";
+
+  return (
+    <s-section heading="Test tracking injection">
+      <s-paragraph>
+        Dev/test only. Inject a synthetic Zinc tracking response and run the standard tracking and fulfillment success path.
+      </s-paragraph>
+      <fetcher.Form method="post" style={{ display: "grid", gap: "12px", maxWidth: "640px" }}>
+        <input type="hidden" name="intent" value="inject_test_tracking" />
+        <label style={formLabelStyle}>
+          Shopify order number or Shopify order ID
+          <input name="orderRef" required placeholder="#1007 or gid://shopify/Order/..." style={textInputStyle} />
+        </label>
+        <label style={formLabelStyle}>
+          Tracking number
+          <input name="trackingNumber" required placeholder="1Z..." style={textInputStyle} />
+        </label>
+        <label style={formLabelStyle}>
+          Carrier
+          <input name="carrier" required placeholder="UPS" style={textInputStyle} />
+        </label>
+        <label style={formLabelStyle}>
+          Provider order ID
+          <input name="providerOrderId" placeholder="Optional" style={textInputStyle} />
+        </label>
+        <button
+          type="submit"
+          disabled={isSubmitting}
+          style={buttonStyle(isSubmitting)}
+          onClick={(event) => {
+            if (!confirm("Inject synthetic tracking and run fulfillment sync for this order?")) {
+              event.preventDefault();
+            }
+          }}
+        >
+          Inject test tracking
+        </button>
+      </fetcher.Form>
+    </s-section>
+  );
+}
+
 const noteStyle = {
   width: "100%",
   minWidth: "180px",
+  border: "1px solid #c9cccf",
+  borderRadius: "6px",
+  padding: "6px 8px",
+  fontSize: "12px",
+};
+
+const formLabelStyle = {
+  display: "grid",
+  gap: "4px",
+  fontSize: "12px",
+  color: "#6d7175",
+};
+
+const textInputStyle = {
+  minHeight: "34px",
   border: "1px solid #c9cccf",
   borderRadius: "6px",
   padding: "6px 8px",
