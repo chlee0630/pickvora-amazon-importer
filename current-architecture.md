@@ -220,6 +220,370 @@ Current system uses:
 
 
 
+\# Fraud Protection Architecture
+
+
+
+Fraud Protection is implemented as a read-only, dry-run observability layer.
+
+
+
+Current DB models:
+
+
+
+\* `FraudProtectionConfig`
+
+\* `FraudOrderAssessment`
+
+
+
+`FraudProtectionConfig` stores shop-level fraud settings.
+
+
+
+Fields:
+
+
+
+\* `enabled`
+
+\* `dryRun`
+
+\* `autoCancelHighRisk`
+
+\* `autoCancelMediumRisk`
+
+\* `cancelReason`
+
+\* `restockInventory`
+
+\* `refundPayment`
+
+\* `notifyCustomer`
+
+\* `delayMinutes`
+
+
+
+`FraudOrderAssessment` stores one assessment per Shopify order.
+
+
+
+Fields:
+
+
+
+\* `shop`
+
+\* `shopifyOrderId`
+
+\* `orderName`
+
+\* `riskLevel`
+
+\* `recommendation`
+
+\* `score`
+
+\* `totalPrice`
+
+\* `currencyCode`
+
+\* `displayFinancialStatus`
+
+\* `displayFulfillmentStatus`
+
+\* `cancelledAt`
+
+\* `assessmentStatus`
+
+\* `decision`
+
+\* `actionMode`
+
+\* `cancellationStatus`
+
+\* `cancellationError`
+
+\* `riskPayload`
+
+\* `assessedAt`
+
+
+
+Current operating mode in production:
+
+
+
+\* `enabled=true`
+
+\* `dryRun=true`
+
+\* `autoCancelHighRisk=true`
+
+\* `autoCancelMediumRisk=false`
+
+\* `restockInventory=false`
+
+\* `refundPayment=false`
+
+\* `notifyCustomer=false`
+
+
+
+This means:
+
+
+
+\* HIGH-risk orders can be recorded as `WOULD_CANCEL`
+
+\* MEDIUM-risk orders remain review-focused
+
+\* no actual cancellation runs
+
+\* no refund automation runs
+
+\* no restock automation runs
+
+\* no Zinc submission blocking occurs
+
+
+
+\# Fraud Analytics Dashboard
+
+
+
+Fraud analytics is exposed in the Operations Dashboard as a read-only summary and recent assessment table.
+
+
+
+The dashboard data is built from `FraudOrderAssessment` only.
+
+
+
+Dashboard fallback behavior:
+
+
+
+\* if fraud analytics query fails, the dashboard uses `EMPTY_FRAUD_ANALYTICS`
+
+\* the rest of the Operations Dashboard continues to render
+
+\* the UI does not require fraud analytics to exist for the page to load
+
+
+
+Visible sections:
+
+
+
+\* `Fraud order analytics`
+
+\* `Fraud protection settings`
+
+
+
+\# Dry-run Fraud Assessment Flow
+
+
+
+File: `app/services/fraud-protection.server.js`
+
+
+
+Core functions:
+
+
+
+\* `getFraudProtectionConfig(shop)`
+
+\* `updateFraudProtectionConfig(...)`
+
+\* `fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId)`
+
+\* `assessOrderFraudRisk(...)`
+
+\* `getFraudAnalyticsDashboard(shop)`
+
+\* `EMPTY_FRAUD_ANALYTICS`
+
+
+
+Order worker integration:
+
+
+
+\* fraud assessment runs after `fetchShopifyOrder(...)`
+
+\* fraud assessment runs after `validateOrder(order)`
+
+\* fraud assessment runs before `buildProviderOrderInput(...)`
+
+\* fraud assessment runs before `persistZincSubmitIntent(...)`
+
+
+
+Worker behavior:
+
+
+
+\* when `FraudProtectionConfig.enabled === false`, risk lookup is skipped
+
+\* when `FraudProtectionConfig.enabled === true`, Shopify order risk is read-only queried
+
+\* assessment results are saved to `FraudOrderAssessment`
+
+\* assessment errors are non-blocking
+
+\* order job failure, retry, and DLQ routing are not triggered by fraud assessment failures
+
+\* Zinc submission continues normally
+
+
+
+Logged events:
+
+
+
+\* `fraud_assessment_skipped`
+
+\* `fraud_assessment_completed`
+
+\* `fraud_assessment_failed_non_blocking`
+
+\* `fraud_order_would_cancel_dry_run`
+
+
+
+\# Dev/Test Fraud Simulation
+
+
+
+Fraud simulation is available only in dev/test runtime.
+
+
+
+Files:
+
+
+
+\* `app/utils/runtime-flags.server.js`
+
+\* `app/services/fraud-protection.server.js`
+
+\* `app/routes/app.operations.jsx`
+
+\* `app/pages/operations-dashboard.jsx`
+
+
+
+Runtime gating:
+
+
+
+\* `canUseFraudTestSimulationForShop(shop)` blocks production runtime
+
+\* the simulation card is hidden in production
+
+\* direct POST to the action is blocked in production with `404`
+
+
+
+Simulation behavior:
+
+
+
+\* creates an internal fraud assessment only
+
+\* does not create a Shopify order
+
+\* does not cancel a Shopify order
+
+\* does not touch `ProviderOrder`, `OrderQueueJob`, `DeadLetterQueueJob`, `FulfillmentLog`, or `TrackingLog`
+
+
+
+Generated simulation record:
+
+
+
+\* `shop`: current session shop
+
+\* `shopifyOrderId`: `gid://shopify/Order/fraud-test-${timestamp}`
+
+\* `orderName`: `FRAUD-TEST-${timestamp}`
+
+\* `riskLevel`: `HIGH`
+
+\* `recommendation`: `CANCEL`
+
+\* `assessmentStatus`: `ASSESSED`
+
+\* `decision`: policy-driven
+
+\* `actionMode`: `DRY_RUN`
+
+\* `riskPayload.source`: `pickvora_internal_fraud_test`
+
+\* `riskPayload.simulated`: `true`
+
+\* `riskPayload.note`: `No Shopify order was created`
+
+
+
+\# Safety Guarantees
+
+
+
+Fraud Protection is not an automatic cancellation system.
+
+
+
+Current guarantees:
+
+
+
+\* no `orderCancel` mutation exists
+
+\* no `write_orders` scope is added
+
+\* no refund automation exists
+
+\* no restock automation exists
+
+\* no customer notification automation exists
+
+\* no Zinc submission blocking is applied
+
+\* production remains dry-run only
+
+\* live cancel mode is not implemented yet
+
+
+
+If live auto-cancel is added later, it will require separate scope review, permission reauthorization, explicit safety controls, and new test coverage.
+
+
+
+\# Not implemented yet
+
+
+
+The following are intentionally not implemented:
+
+
+
+\* actual Shopify order cancellation
+\* `orderCancel` mutation
+\* `write_orders` scope
+\* refund automation
+\* restock automation
+\* Zinc submit blocking based on fraud decision
+\* production fraud test order generation
+
+
+
 \---
 
 
@@ -263,6 +627,12 @@ Current system uses:
 \* retry exhaustion handling
 
 \* operations dashboard
+
+\* fraud order analytics
+
+\* fraud protection settings
+
+\* fraud test simulation
 
 
 
@@ -1057,6 +1427,22 @@ Current completed features:
 
 
 ✔ production-safe fulfillment analytics layer
+
+
+
+✔ Fraud Protection dry-run assessment
+
+
+
+✔ Fraud Analytics dashboard summary
+
+
+
+✔ Fraud protection settings management
+
+
+
+✔ dev/test fraud test simulation
 
 
 
