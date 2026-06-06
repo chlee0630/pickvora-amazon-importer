@@ -19,6 +19,10 @@ import { getScalingConfig } from "../utils/scaling-config.server.js";
 import { trackWorkerJob } from "../services/monitoring/worker-latency.server.js";
 import { recordWorkerHeartbeat } from "../services/monitoring/health-monitor.service.js";
 import { recordMonitoringEvent } from "../services/monitoring/monitoring-service.server.js";
+import {
+  assessOrderFraudRisk,
+  getFraudProtectionConfig,
+} from "../services/fraud-protection.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
 const ORDER_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -180,6 +184,11 @@ async function processCreateOrderJob(job) {
   const session = await getOfflineSession(job.shop);
   const order = await fetchShopifyOrder(job.shop, session.accessToken, job.shopifyOrderId);
   validateOrder(order);
+  await runFraudAssessmentForOrder({
+    job: providerJob,
+    accessToken: session.accessToken,
+    shopifyOrderId: order.id || job.shopifyOrderId,
+  });
 
   const orderInput = await buildProviderOrderInput(job.shop, order);
   const idempotencyKey = selected.providerName === "zinc"
@@ -544,6 +553,50 @@ function logWorkerEvent(event, job, details = {}) {
     attempts: job.attempts,
     ...details,
   }));
+}
+
+export async function runFraudAssessmentForOrder({ job, accessToken, shopifyOrderId }, deps = {}) {
+  const getConfig = deps.getFraudProtectionConfig || getFraudProtectionConfig;
+  const assessRisk = deps.assessOrderFraudRisk || assessOrderFraudRisk;
+  const logEvent = deps.logWorkerEvent || logWorkerEvent;
+  const logError = deps.logError || console.error;
+
+  try {
+    const config = await getConfig(job.shop);
+    if (!config.enabled) {
+      logEvent("fraud_assessment_skipped", job, {
+        reason: "fraud_protection_disabled",
+      });
+      return { skipped: true, reason: "fraud_protection_disabled" };
+    }
+
+    const result = await assessRisk({
+      shop: job.shop,
+      accessToken,
+      shopifyOrderId,
+    });
+
+    logEvent("fraud_assessment_completed", job, {
+      riskLevel: result.riskLevel,
+      decision: result.decision,
+      actionMode: result.actionMode,
+    });
+
+    if (result.decision === "WOULD_CANCEL") {
+      logEvent("fraud_order_would_cancel_dry_run", job, {
+        riskLevel: result.riskLevel,
+        actionMode: result.actionMode,
+      });
+    }
+
+    return { skipped: false, result };
+  } catch (err) {
+    logError("fraud_assessment_failed_non_blocking:", err?.message || err);
+    logEvent("fraud_assessment_failed_non_blocking", job, {
+      error: err?.message || String(err),
+    });
+    return { skipped: true, reason: "assessment_failed" };
+  }
 }
 
 export function shouldSkipZincOrderSubmission(providerOrder) {

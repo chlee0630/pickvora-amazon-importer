@@ -62,9 +62,34 @@ const fulfillmentReasonColumns = [
   { key: "count", label: "Count" },
 ];
 
+const fraudColumns = [
+  { key: "orderName", label: "Order" },
+  { key: "riskLevel", label: "Risk" },
+  { key: "recommendation", label: "Recommendation" },
+  { key: "decision", label: "Decision" },
+  { key: "actionMode", label: "Mode" },
+  { key: "totalPrice", label: "Amount", render: (row) => formatMoney(row.totalPrice, row.currencyCode) },
+  { key: "displayFinancialStatus", label: "Payment" },
+  { key: "displayFulfillmentStatus", label: "Fulfillment" },
+  { key: "assessedAt", label: "Assessed", render: (row) => formatDate(row.assessedAt) },
+];
+
+const emptyFraudAnalytics = {
+  totalAssessments: 0,
+  highRiskCount: 0,
+  mediumRiskCount: 0,
+  lowRiskCount: 0,
+  pendingRiskCount: 0,
+  reviewCount: 0,
+  wouldCancelCount: 0,
+  cancelledCount: 0,
+  recent: [],
+};
+
 export default function OperationsDashboardPage({ dashboard, filters, testTrackingInjectionEnabled }) {
   const fetcher = useFetcher();
   const actionResult = fetcher.data;
+  const fraudAnalytics = dashboard.fraudAnalytics ?? emptyFraudAnalytics;
   const manualReviewColumns = [
     { key: "id", label: "Order id" },
     { key: "shopifyOrderId", label: "Shopify order id" },
@@ -147,6 +172,28 @@ export default function OperationsDashboardPage({ dashboard, filters, testTracki
             { label: "Duplicate prevention events", value: dashboard.fulfillment.duplicatePreventionEvents },
           ]}
         />
+      </s-section>
+
+      <s-section heading="Fraud order analytics">
+        <SummaryGrid
+          items={[
+            { label: "Assessed orders", value: fraudAnalytics.totalAssessments },
+            { label: "High risk", value: fraudAnalytics.highRiskCount, tone: "critical" },
+            { label: "Medium risk", value: fraudAnalytics.mediumRiskCount, tone: "critical" },
+            { label: "Low risk", value: fraudAnalytics.lowRiskCount },
+            { label: "Pending risk", value: fraudAnalytics.pendingRiskCount },
+            { label: "Manual review", value: fraudAnalytics.reviewCount, tone: "critical" },
+            { label: "Would cancel dry-run", value: fraudAnalytics.wouldCancelCount, tone: "critical" },
+            { label: "Cancelled", value: fraudAnalytics.cancelledCount, tone: "critical" },
+          ]}
+        />
+        <div style={{ marginTop: "12px" }}>
+          <DataTable
+            columns={fraudColumns}
+            rows={fraudAnalytics.recent}
+            emptyMessage="No fraud assessments found yet."
+          />
+        </div>
       </s-section>
 
       <s-section heading="Fulfillment exception analytics">
@@ -257,6 +304,11 @@ function valueFor(analytics, metricName) {
 
 function withIds(rows, key) {
   return rows.map((row) => ({ ...row, id: row[key] }));
+}
+
+function formatMoney(amount, currencyCode) {
+  if (!Number.isFinite(amount)) return "-";
+  return currencyCode ? `${amount} ${currencyCode}` : String(amount);
 }
 
 function ManualReviewActions({ row, fetcher }) {

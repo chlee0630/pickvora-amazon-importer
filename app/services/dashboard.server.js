@@ -1,5 +1,6 @@
 import prisma from "../db.server.js";
 import { getAllowedAdminActions } from "./admin-order-actions.server.js";
+import { EMPTY_FRAUD_ANALYTICS, getFraudAnalyticsDashboard } from "./fraud-protection.server.js";
 import { buildDateWhere, redactDashboardText } from "../utils/dashboard-filters.server.js";
 import { getDashboardHealthSummary } from "./monitoring/health-monitor.service.js";
 import {
@@ -32,6 +33,7 @@ export async function getOperationsDashboard(shop, filters) {
       healthSummary,
       fulfillmentExceptions,
       fulfillmentExceptionDetails,
+      fraudAnalytics,
       lists,
     ] = await Promise.all([
       getOrderOverview(shop, filters),
@@ -46,6 +48,7 @@ export async function getOperationsDashboard(shop, filters) {
         page: filters.page,
         limit: filters.pageSize,
       }),
+      getFraudAnalyticsDashboardSafe(shop),
       getOperationalLists(shop, filters),
     ]);
 
@@ -59,11 +62,21 @@ export async function getOperationsDashboard(shop, filters) {
       healthSummary,
       fulfillmentExceptions,
       fulfillmentExceptionDetails,
+      fraudAnalytics,
       ...lists,
     };
   } catch (err) {
     console.error("Operations dashboard query failure:", err?.message || err);
     throw err;
+  }
+}
+
+async function getFraudAnalyticsDashboardSafe(shop) {
+  try {
+    return await getFraudAnalyticsDashboard(shop);
+  } catch (err) {
+    console.error("Operations dashboard fraud analytics fetch failure:", err?.message || err);
+    return EMPTY_FRAUD_ANALYTICS;
   }
 }
 

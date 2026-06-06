@@ -14,79 +14,79 @@ datasource db {
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
 
 model AmazonProduct {
-  id               String   @id @default(cuid())
-  asin             String   @unique
-  title            String
-  brand            String?
-  category         String?
-  description      String?
-  featureBullets   String?
-  price            Float?
-  salePrice        Float?
-  inStock          Boolean  @default(true)
-  stockQuantity    Int?
-  outOfStock       Boolean  @default(false)
-  availabilityStatus String?
-  cannotBeShipped Boolean  @default(false)
+  id                        String    @id @default(cuid())
+  asin                      String    @unique
+  title                     String
+  brand                     String?
+  category                  String?
+  description               String?
+  featureBullets            String?
+  price                     Float?
+  salePrice                 Float?
+  inStock                   Boolean   @default(true)
+  stockQuantity             Int?
+  outOfStock                Boolean   @default(false)
+  availabilityStatus        String?
+  cannotBeShipped           Boolean   @default(false)
   shippingUnavailableReason String?
-  shippingPrice    Float?
-  primeEligible    Boolean  @default(false)
-  mainImage        String?
-  images           String?
-  variants         String?
-  rating           Float?
-  ratingsTotal     Int?
-  reviewsUpdatedAt DateTime?
-  reviews          String?
-  bestsellRank     Int?
-  amazonUrl        String?
-  shopifyProductId String?
-  shopifyVariantId String?
-  shopifyHandle    String?
-  marginRate       Float    @default(30)
-  shopifyPrice     Float?
-  lastSyncedAt     DateTime?
-  syncStatus       String   @default("pending")
-  syncError        String?
-  riskLevel        String   @default("safe")
-  filterStatus     String   @default("ok")
-  filterReason     String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  shippingPrice             Float?
+  primeEligible             Boolean   @default(false)
+  mainImage                 String?
+  images                    String?
+  variants                  String?
+  rating                    Float?
+  ratingsTotal              Int?
+  reviewsUpdatedAt          DateTime?
+  reviews                   String?
+  bestsellRank              Int?
+  amazonUrl                 String?
+  shopifyProductId          String?
+  shopifyVariantId          String?
+  shopifyHandle             String?
+  marginRate                Float     @default(30)
+  shopifyPrice              Float?
+  lastSyncedAt              DateTime?
+  syncStatus                String    @default("pending")
+  syncError                 String?
+  riskLevel                 String    @default("safe")
+  filterStatus              String    @default("ok")
+  filterReason              String?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 }
 
 model AppSettings {
-  id                String   @id @default(cuid())
-  shop              String   @unique
-  defaultMargin     Float    @default(30)
-  includeShipping   Boolean  @default(false)
-  autoHideOutOfStock Boolean @default(true)
-  addReviewsToDesc  Boolean  @default(true)
-  autoGenerateTags  Boolean  @default(true)
-  saleMode          String   @default("direct")
-  addDisclaimer     Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  shop               String   @unique
+  defaultMargin      Float    @default(30)
+  includeShipping    Boolean  @default(false)
+  autoHideOutOfStock Boolean  @default(true)
+  addReviewsToDesc   Boolean  @default(true)
+  autoGenerateTags   Boolean  @default(true)
+  saleMode           String   @default("direct")
+  addDisclaimer      Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }
 
 model BrandBlacklist {
@@ -112,14 +112,14 @@ model KeywordFilter {
 }
 
 model SchedulerConfig {
-  id         String    @id @default(cuid())
-  shop       String    @unique
-  schedule   String    @default("daily")
-  enabled    Boolean   @default(false)
-  lastRunAt  DateTime?
-  nextRunAt  DateTime?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id        String    @id @default(cuid())
+  shop      String    @unique
+  schedule  String    @default("daily")
+  enabled   Boolean   @default(false)
+  lastRunAt DateTime?
+  nextRunAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 }
 
 model UpdateLog {
@@ -135,42 +135,42 @@ model UpdateLog {
 }
 
 model OrderWebhookLog {
-  id              String   @id @default(cuid())
-  shop            String
-  topic           String
-  webhookId       String?  @unique
-  shopifyOrderId  String
-  status          String   @default("received")
-  payload         String?
-  error           String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(cuid())
+  shop           String
+  topic          String
+  webhookId      String?  @unique
+  shopifyOrderId String
+  status         String   @default("received")
+  payload        String?
+  error          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   @@index([shop, shopifyOrderId])
 }
 
 model OrderQueueJob {
-  id              String    @id @default(cuid())
-  shop            String
-  type            String
-  status          String    @default("pending")
-  shopifyOrderId  String
-  provider        String    @default("zinc")
-  payload         String?
-  attempts        Int       @default(0)
-  maxAttempts     Int       @default(5)
-  runAt           DateTime  @default(now())
-  lockedAt        DateTime?
-  completedAt     DateTime?
-  lastError       String?
-  retryHistory    String?
-  failureReason   String?
-  failureCategory String?
-  dlqStatus       String?
-  recoveryAttempts Int      @default(0)
-  lastFailureAt   DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  shop             String
+  type             String
+  status           String    @default("pending")
+  shopifyOrderId   String
+  provider         String    @default("zinc")
+  payload          String?
+  attempts         Int       @default(0)
+  maxAttempts      Int       @default(5)
+  runAt            DateTime  @default(now())
+  lockedAt         DateTime?
+  completedAt      DateTime?
+  lastError        String?
+  retryHistory     String?
+  failureReason    String?
+  failureCategory  String?
+  dlqStatus        String?
+  recoveryAttempts Int       @default(0)
+  lastFailureAt    DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@unique([shop, type, shopifyOrderId])
   @@index([status, runAt])
@@ -180,43 +180,43 @@ model OrderQueueJob {
 }
 
 model DeadLetterQueueJob {
-  id              String    @id @default(cuid())
-  originalJobId   String    @unique
-  shop            String
-  type            String
-  shopifyOrderId  String
-  provider        String    @default("zinc")
-  status          String    @default("open")
-  originalPayload String?
-  retryHistory    String?
-  failureCategory String
-  failureReason   String
-  attempts        Int
-  maxAttempts     Int
-  recoveryAttempts Int      @default(0)
-  recoveryNote    String?
-  lastFailureAt   DateTime
-  recoveredAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  originalJobId    String    @unique
+  shop             String
+  type             String
+  shopifyOrderId   String
+  provider         String    @default("zinc")
+  status           String    @default("open")
+  originalPayload  String?
+  retryHistory     String?
+  failureCategory  String
+  failureReason    String
+  attempts         Int
+  maxAttempts      Int
+  recoveryAttempts Int       @default(0)
+  recoveryNote     String?
+  lastFailureAt    DateTime
+  recoveredAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@index([status, lastFailureAt])
   @@index([shop, shopifyOrderId])
 }
 
 model MonitoringEvent {
-  id              String   @id @default(cuid())
-  eventType       String
-  severity        String   @default("info")
-  shop            String?
-  jobType         String?
-  workerName      String?
-  provider        String?
-  shopifyOrderId  String?
-  durationMs      Int?
-  count           Int?
-  payload         String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  eventType      String
+  severity       String   @default("info")
+  shop           String?
+  jobType        String?
+  workerName     String?
+  provider       String?
+  shopifyOrderId String?
+  durationMs     Int?
+  count          Int?
+  payload        String?
+  createdAt      DateTime @default(now())
 
   @@index([eventType, createdAt])
   @@index([severity, createdAt])
@@ -256,28 +256,28 @@ model AnalyticsAggregationRun {
 }
 
 model ProviderOrder {
-  id                String    @id @default(cuid())
-  shop              String
-  shopifyOrderId    String
-  provider          String
-  providerOrderId   String?
-  status            String    @default("pending")
-  requestPayload    String?
-  responsePayload   String?
-  trackingNumber    String?
-  trackingCarrier   String?
-  trackingUrl       String?
-  trackingReceivedAt DateTime?
-  fulfillmentSyncedAt DateTime?
-  shopifyFulfillmentId String?
-  processingLockedAt DateTime?
-  lastError         String?
-  providerFailureCode String?
+  id                     String    @id @default(cuid())
+  shop                   String
+  shopifyOrderId         String
+  provider               String
+  providerOrderId        String?
+  status                 String    @default("pending")
+  requestPayload         String?
+  responsePayload        String?
+  trackingNumber         String?
+  trackingCarrier        String?
+  trackingUrl            String?
+  trackingReceivedAt     DateTime?
+  fulfillmentSyncedAt    DateTime?
+  shopifyFulfillmentId   String?
+  processingLockedAt     DateTime?
+  lastError              String?
+  providerFailureCode    String?
   providerFailureMessage String?
-  providerAttemptCount Int      @default(0)
-  providerLastAttemptAt DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  providerAttemptCount   Int       @default(0)
+  providerLastAttemptAt  DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   @@unique([shop, shopifyOrderId, provider])
   @@index([provider, providerOrderId])
@@ -318,20 +318,20 @@ model TrackingLog {
 }
 
 model FulfillmentLog {
-  id                 String   @id @default(cuid())
-  shop               String
-  shopifyOrderId     String
-  provider           String
-  providerOrderId    String?
+  id                   String   @id @default(cuid())
+  shop                 String
+  shopifyOrderId       String
+  provider             String
+  providerOrderId      String?
   shopifyFulfillmentId String?
-  trackingNumber     String
-  carrier            String
-  trackingUrl        String?
-  status             String
-  requestPayload     String?
-  responsePayload    String?
-  message            String?
-  createdAt          DateTime @default(now())
+  trackingNumber       String
+  carrier              String
+  trackingUrl          String?
+  status               String
+  requestPayload       String?
+  responsePayload      String?
+  message              String?
+  createdAt            DateTime @default(now())
 
   @@unique([shop, shopifyOrderId, provider, trackingNumber, carrier])
   @@index([shop, shopifyOrderId])
@@ -353,4 +353,49 @@ model AdminOrderAction {
   @@index([shop, shopifyOrderId])
   @@index([actionType])
   @@index([createdAt])
+}
+
+model FraudProtectionConfig {
+  id                   String   @id @default(cuid())
+  shop                 String   @unique
+  enabled              Boolean  @default(false)
+  dryRun               Boolean  @default(true)
+  autoCancelHighRisk   Boolean  @default(false)
+  autoCancelMediumRisk Boolean  @default(false)
+  cancelReason         String   @default("FRAUD")
+  restockInventory     Boolean  @default(true)
+  refundPayment        Boolean  @default(true)
+  notifyCustomer       Boolean  @default(false)
+  delayMinutes         Int      @default(2)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model FraudOrderAssessment {
+  id                       String    @id @default(cuid())
+  shop                     String
+  shopifyOrderId           String
+  orderName                String?
+  riskLevel                String    @default("UNKNOWN")
+  recommendation           String?
+  score                    Float?
+  totalPrice               Float?
+  currencyCode             String?
+  displayFinancialStatus   String?
+  displayFulfillmentStatus String?
+  cancelledAt              DateTime?
+  assessmentStatus         String    @default("ASSESSED")
+  decision                 String    @default("ALLOW")
+  actionMode               String    @default("DRY_RUN")
+  cancellationStatus       String?
+  cancellationError        String?
+  riskPayload              String?
+  assessedAt               DateTime  @default(now())
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  @@unique([shop, shopifyOrderId])
+  @@index([shop, riskLevel])
+  @@index([shop, decision])
+  @@index([shop, assessedAt])
 }
