@@ -5,7 +5,7 @@ import { trackApiCall } from "./monitoring/api-metrics.server.js";
 const API_VERSION = "2025-10";
 const DEFAULT_TIMEOUT_MS = 30000;
 
-const DEFAULT_CONFIG = {
+export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
   enabled: false,
   dryRun: true,
   autoCancelHighRisk: false,
@@ -80,7 +80,48 @@ async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = 
 
 export async function getFraudProtectionConfig(shop) {
   const config = await prisma.fraudProtectionConfig.findUnique({ where: { shop } });
-  return config || { shop, ...DEFAULT_CONFIG };
+  return config || { shop, ...DEFAULT_FRAUD_PROTECTION_CONFIG };
+}
+
+export async function updateFraudProtectionConfig({
+  shop,
+  enabled,
+  dryRun,
+  autoCancelHighRisk,
+  autoCancelMediumRisk,
+  updatedBy,
+}, deps = {}) {
+  if (!shop) throw new Error("Shop is required to update fraud protection config.");
+
+  const prismaClient = deps.prismaClient || prisma;
+  const safeConfig = sanitizeFraudProtectionConfig({
+    enabled,
+    dryRun,
+    autoCancelHighRisk,
+    autoCancelMediumRisk,
+  });
+
+  const config = await prismaClient.fraudProtectionConfig.upsert({
+    where: { shop },
+    create: {
+      shop,
+      ...safeConfig,
+    },
+    update: safeConfig,
+  });
+
+  console.log(JSON.stringify({
+    event: "fraud_protection_config_updated",
+    layer: "fraud_protection",
+    shop,
+    enabled: config.enabled,
+    dryRun: config.dryRun,
+    autoCancelHighRisk: config.autoCancelHighRisk,
+    autoCancelMediumRisk: config.autoCancelMediumRisk,
+    updatedBy: updatedBy ? "admin" : null,
+  }));
+
+  return config;
 }
 
 export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
@@ -290,4 +331,23 @@ function getActionMode({ config, decision }) {
   if (config.dryRun) return "DRY_RUN";
   if (decision === "CANCEL_REQUIRED") return "LIVE_PENDING_CANCEL";
   return "LIVE";
+}
+
+function sanitizeFraudProtectionConfig({
+  enabled,
+  dryRun,
+  autoCancelHighRisk,
+  autoCancelMediumRisk,
+}) {
+  return {
+    enabled: Boolean(enabled),
+    dryRun: true,
+    autoCancelHighRisk: Boolean(enabled && autoCancelHighRisk),
+    autoCancelMediumRisk: false,
+    cancelReason: "FRAUD",
+    restockInventory: false,
+    refundPayment: false,
+    notifyCustomer: false,
+    delayMinutes: 2,
+  };
 }

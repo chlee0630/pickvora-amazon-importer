@@ -1,6 +1,11 @@
 import prisma from "../db.server.js";
 import { getAllowedAdminActions } from "./admin-order-actions.server.js";
-import { EMPTY_FRAUD_ANALYTICS, getFraudAnalyticsDashboard } from "./fraud-protection.server.js";
+import {
+  DEFAULT_FRAUD_PROTECTION_CONFIG,
+  EMPTY_FRAUD_ANALYTICS,
+  getFraudAnalyticsDashboard,
+  getFraudProtectionConfig,
+} from "./fraud-protection.server.js";
 import { buildDateWhere, redactDashboardText } from "../utils/dashboard-filters.server.js";
 import { getDashboardHealthSummary } from "./monitoring/health-monitor.service.js";
 import {
@@ -34,6 +39,7 @@ export async function getOperationsDashboard(shop, filters) {
       fulfillmentExceptions,
       fulfillmentExceptionDetails,
       fraudAnalytics,
+      fraudConfig,
       lists,
     ] = await Promise.all([
       getOrderOverview(shop, filters),
@@ -49,6 +55,7 @@ export async function getOperationsDashboard(shop, filters) {
         limit: filters.pageSize,
       }),
       getFraudAnalyticsDashboardSafe(shop),
+      getFraudProtectionConfigSafe(shop),
       getOperationalLists(shop, filters),
     ]);
 
@@ -63,6 +70,7 @@ export async function getOperationsDashboard(shop, filters) {
       fulfillmentExceptions,
       fulfillmentExceptionDetails,
       fraudAnalytics,
+      fraudConfig,
       ...lists,
     };
   } catch (err) {
@@ -77,6 +85,15 @@ async function getFraudAnalyticsDashboardSafe(shop) {
   } catch (err) {
     console.error("Operations dashboard fraud analytics fetch failure:", err?.message || err);
     return EMPTY_FRAUD_ANALYTICS;
+  }
+}
+
+async function getFraudProtectionConfigSafe(shop) {
+  try {
+    return await getFraudProtectionConfig(shop);
+  } catch (err) {
+    console.error("Operations dashboard fraud config fetch failure:", err?.message || err);
+    return { shop, ...DEFAULT_FRAUD_PROTECTION_CONFIG };
   }
 }
 

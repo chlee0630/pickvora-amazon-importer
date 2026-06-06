@@ -2,6 +2,7 @@ import { useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { runAdminOrderAction } from "../services/admin-order-actions.server";
+import { updateFraudProtectionConfig } from "../services/fraud-protection.server";
 import { injectTestTracking } from "../services/test-tracking-injection.server";
 import { getOperationsDashboard } from "../services/dashboard.server";
 import { parseDashboardFilters } from "../utils/dashboard-filters.server";
@@ -26,6 +27,26 @@ export const action = async ({ request }) => {
   const intent = String(form.get("intent") || "");
 
   try {
+    if (intent === "update_fraud_protection_config") {
+      const enabled = String(form.get("enabled") || "") === "true";
+      const config = await updateFraudProtectionConfig({
+        shop: session.shop,
+        enabled,
+        dryRun: true,
+        autoCancelHighRisk: enabled,
+        autoCancelMediumRisk: false,
+        updatedBy: session.email || session.userId?.toString() || session.shop,
+      });
+
+      return {
+        success: true,
+        message: enabled
+          ? "Dry-run fraud protection enabled. Orders will not be cancelled."
+          : "Fraud protection disabled.",
+        config,
+      };
+    }
+
     if (intent === "inject_test_tracking") {
       if (!canUseTestTrackingInjectionForShop(session.shop)) {
         throw new Response("Not found", { status: 404 });

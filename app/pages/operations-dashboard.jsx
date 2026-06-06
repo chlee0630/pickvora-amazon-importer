@@ -86,10 +86,18 @@ const emptyFraudAnalytics = {
   recent: [],
 };
 
+const emptyFraudConfig = {
+  enabled: false,
+  dryRun: true,
+  autoCancelHighRisk: false,
+  autoCancelMediumRisk: false,
+};
+
 export default function OperationsDashboardPage({ dashboard, filters, testTrackingInjectionEnabled }) {
   const fetcher = useFetcher();
   const actionResult = fetcher.data;
   const fraudAnalytics = dashboard.fraudAnalytics ?? emptyFraudAnalytics;
+  const fraudConfig = actionResult?.config ?? dashboard.fraudConfig ?? emptyFraudConfig;
   const manualReviewColumns = [
     { key: "id", label: "Order id" },
     { key: "shopifyOrderId", label: "Shopify order id" },
@@ -175,6 +183,8 @@ export default function OperationsDashboardPage({ dashboard, filters, testTracki
       </s-section>
 
       <s-section heading="Fraud order analytics">
+        <FraudProtectionSettings config={fraudConfig} fetcher={fetcher} />
+        <div style={{ marginTop: "12px" }}>
         <SummaryGrid
           items={[
             { label: "Assessed orders", value: fraudAnalytics.totalAssessments },
@@ -187,6 +197,7 @@ export default function OperationsDashboardPage({ dashboard, filters, testTracki
             { label: "Cancelled", value: fraudAnalytics.cancelledCount, tone: "critical" },
           ]}
         />
+        </div>
         <div style={{ marginTop: "12px" }}>
           <DataTable
             columns={fraudColumns}
@@ -309,6 +320,61 @@ function withIds(rows, key) {
 function formatMoney(amount, currencyCode) {
   if (!Number.isFinite(amount)) return "-";
   return currencyCode ? `${amount} ${currencyCode}` : String(amount);
+}
+
+function FraudProtectionSettings({ config, fetcher }) {
+  const isSubmitting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "update_fraud_protection_config";
+  const enabled = Boolean(config.enabled);
+  const highRiskAction = enabled && config.autoCancelHighRisk ? "Would cancel" : "Review only";
+
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base" background="default">
+      <div style={{ display: "grid", gap: "12px" }}>
+        <div style={{ fontWeight: 700 }}>Fraud protection settings</div>
+        <SummaryGrid
+          items={[
+            { label: "Enabled", value: enabled ? "Enabled" : "Disabled", tone: enabled ? "critical" : undefined },
+            { label: "Mode", value: "Dry-run only" },
+            { label: "High-risk action", value: highRiskAction, tone: highRiskAction === "Would cancel" ? "critical" : undefined },
+            { label: "Medium-risk action", value: "Review only" },
+          ]}
+        />
+        <s-stack direction="inline" gap="base" style={{ flexWrap: "wrap" }}>
+          <FraudConfigForm
+            fetcher={fetcher}
+            enabled
+            label="Enable dry-run fraud protection"
+            disabled={isSubmitting || enabled}
+            confirmMessage="Enable dry-run fraud protection? This will only record fraud assessments and will not cancel orders."
+          />
+          <FraudConfigForm
+            fetcher={fetcher}
+            enabled={false}
+            label="Disable fraud protection"
+            disabled={isSubmitting || !enabled}
+            confirmMessage="Disable fraud protection?"
+          />
+        </s-stack>
+      </div>
+    </s-box>
+  );
+}
+
+function FraudConfigForm({ fetcher, enabled, label, disabled, confirmMessage }) {
+  return (
+    <fetcher.Form
+      method="post"
+      onSubmit={(event) => {
+        if (!confirm(confirmMessage)) event.preventDefault();
+      }}
+    >
+      <input type="hidden" name="intent" value="update_fraud_protection_config" />
+      <input type="hidden" name="enabled" value={enabled ? "true" : "false"} />
+      <button type="submit" disabled={disabled} style={{ ...buttonStyle(disabled), width: "auto", minWidth: "220px" }}>
+        {label}
+      </button>
+    </fetcher.Form>
+  );
 }
 
 function ManualReviewActions({ row, fetcher }) {
