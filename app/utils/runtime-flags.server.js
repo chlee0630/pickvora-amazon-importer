@@ -14,3 +14,11 @@ export function canUseTestTrackingInjectionForShop(shop) {
   if (protectedShop && String(shop).trim().toLowerCase() === protectedShop) return false;
   return true;
 }
+
+export function canUseFraudTestSimulationForShop(shop) {
+  if (isProductionRuntime()) return false;
+  if (!shop) return false;
+  const protectedShop = String(process.env.SHOP_CUSTOM_DOMAIN || "").trim().toLowerCase();
+  if (protectedShop && String(shop).trim().toLowerCase() === protectedShop) return false;
+  return true;
+}

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { updateFraudProtectionConfig } from "../app/services/fraud-protection.server.js";
+import {
+  createFraudTestAssessment,
+  updateFraudProtectionConfig,
+} from "../app/services/fraud-protection.server.js";
+import { canUseFraudTestSimulationForShop } from "../app/utils/runtime-flags.server.js";
 
 const SHOP = "example.myshopify.com";
 
@@ -64,6 +68,95 @@ test("updateFraudProtectionConfig never stores live mode when dryRun is false", 
   assert.equal(calls[0].update.dryRun, true);
 });
 
+test("canUseFraudTestSimulationForShop blocks production runtime", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+  };
+
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.SHOPIFY_APP_ENV = "";
+    process.env.SHOP_CUSTOM_DOMAIN = "";
+    assert.equal(canUseFraudTestSimulationForShop(SHOP), false);
+
+    process.env.NODE_ENV = "development";
+    process.env.SHOPIFY_APP_ENV = "production";
+    assert.equal(canUseFraudTestSimulationForShop(SHOP), false);
+
+    process.env.NODE_ENV = "development";
+    process.env.SHOPIFY_APP_ENV = "";
+    assert.equal(canUseFraudTestSimulationForShop(SHOP), true);
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
+  }
+});
+
+test("createFraudTestAssessment creates a HIGH risk dry-run simulation record", async () => {
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("Shopify API should not be called");
+  };
+
+  try {
+    const assessment = await createFraudTestAssessment({
+      shop: SHOP,
+      createdBy: "admin@example.com",
+    }, {
+      prismaClient: makeSimulationPrismaClient(calls, {
+        enabled: true,
+        dryRun: true,
+        autoCancelHighRisk: true,
+        autoCancelMediumRisk: false,
+      }),
+      now: new Date("2026-06-06T00:00:00.000Z"),
+    });
+
+    assert.equal(assessment.shop, SHOP);
+    assert.equal(assessment.shopifyOrderId, "gid://shopify/Order/fraud-test-1780704000000");
+    assert.equal(assessment.orderName, "FRAUD-TEST-1780704000000");
+    assert.equal(assessment.riskLevel, "HIGH");
+    assert.equal(assessment.recommendation, "CANCEL");
+    assert.equal(assessment.decision, "WOULD_CANCEL");
+    assert.equal(assessment.actionMode, "DRY_RUN");
+    assert.equal(assessment.cancellationStatus, null);
+    assert.equal(assessment.cancellationError, null);
+    assert.deepEqual(JSON.parse(assessment.riskPayload), {
+      source: "pickvora_internal_fraud_test",
+      simulated: true,
+      note: "No Shopify order was created",
+      createdBy: "admin",
+    });
+    assert.deepEqual(calls.map((call) => call.model), ["fraudProtectionConfig", "fraudOrderAssessment"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("createFraudTestAssessment uses review/allow policy without touching order pipeline tables", async () => {
+  const calls = [];
+  const assessment = await createFraudTestAssessment({
+    shop: SHOP,
+  }, {
+    prismaClient: makeSimulationPrismaClient(calls, {
+      enabled: true,
+      dryRun: true,
+      autoCancelHighRisk: false,
+      autoCancelMediumRisk: false,
+    }),
+    now: new Date("2026-06-06T00:00:01.000Z"),
+  });
+
+  assert.equal(assessment.riskLevel, "HIGH");
+  assert.equal(assessment.decision, "REVIEW");
+  assert.equal(assessment.actionMode, "DRY_RUN");
+  assert.deepEqual(calls.map((call) => call.model), ["fraudProtectionConfig", "fraudOrderAssessment"]);
+});
+
 function makePrismaClient(calls) {
   return {
     fraudProtectionConfig: {
@@ -77,4 +170,37 @@ function makePrismaClient(calls) {
       },
     },
   };
+}
+
+function makeSimulationPrismaClient(calls, config) {
+  const client = {
+    fraudProtectionConfig: {
+      findUnique: async ({ where }) => {
+        calls.push({ model: "fraudProtectionConfig", operation: "findUnique", where });
+        return {
+          shop: where.shop,
+          ...config,
+        };
+      },
+    },
+    fraudOrderAssessment: {
+      create: async ({ data }) => {
+        calls.push({ model: "fraudOrderAssessment", operation: "create", data });
+        return {
+          id: "fraud-assessment-1",
+          ...data,
+        };
+      },
+    },
+  };
+
+  for (const model of ["providerOrder", "orderQueueJob", "deadLetterQueueJob", "fulfillmentLog", "trackingLog"]) {
+    Object.defineProperty(client, model, {
+      get() {
+        throw new Error(`${model} should not be touched by fraud test simulation`);
+      },
+    });
+  }
+
+  return client;
 }

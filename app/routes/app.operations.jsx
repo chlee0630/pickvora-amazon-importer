@@ -2,11 +2,17 @@ import { useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { runAdminOrderAction } from "../services/admin-order-actions.server";
-import { updateFraudProtectionConfig } from "../services/fraud-protection.server";
+import {
+  createFraudTestAssessment,
+  updateFraudProtectionConfig,
+} from "../services/fraud-protection.server";
 import { injectTestTracking } from "../services/test-tracking-injection.server";
 import { getOperationsDashboard } from "../services/dashboard.server";
 import { parseDashboardFilters } from "../utils/dashboard-filters.server";
-import { canUseTestTrackingInjectionForShop } from "../utils/runtime-flags.server";
+import {
+  canUseFraudTestSimulationForShop,
+  canUseTestTrackingInjectionForShop,
+} from "../utils/runtime-flags.server";
 import OperationsDashboardPage from "../pages/operations-dashboard";
 
 export const loader = async ({ request }) => {
@@ -18,6 +24,7 @@ export const loader = async ({ request }) => {
     dashboard,
     filters,
     testTrackingInjectionEnabled: canUseTestTrackingInjectionForShop(session.shop),
+    fraudTestSimulationEnabled: canUseFraudTestSimulationForShop(session.shop),
   };
 };
 
@@ -44,6 +51,23 @@ export const action = async ({ request }) => {
           ? "Dry-run fraud protection enabled. Orders will not be cancelled."
           : "Fraud protection disabled.",
         config,
+      };
+    }
+
+    if (intent === "create_fraud_test_assessment") {
+      if (!canUseFraudTestSimulationForShop(session.shop)) {
+        throw new Response("Not found", { status: 404 });
+      }
+
+      const assessment = await createFraudTestAssessment({
+        shop: session.shop,
+        createdBy: session.email || session.userId?.toString() || session.shop,
+      });
+
+      return {
+        success: true,
+        message: "Internal fraud test assessment created. No Shopify order was created.",
+        assessment,
       };
     }
 
@@ -87,12 +111,13 @@ export const action = async ({ request }) => {
 };
 
 export default function OperationsDashboard() {
-  const { dashboard, filters, testTrackingInjectionEnabled } = useLoaderData();
+  const { dashboard, filters, testTrackingInjectionEnabled, fraudTestSimulationEnabled } = useLoaderData();
   return (
     <OperationsDashboardPage
       dashboard={dashboard}
       filters={filters}
       testTrackingInjectionEnabled={testTrackingInjectionEnabled}
+      fraudTestSimulationEnabled={fraudTestSimulationEnabled}
     />
   );
 }

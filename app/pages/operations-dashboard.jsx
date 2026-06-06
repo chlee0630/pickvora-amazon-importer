@@ -93,7 +93,12 @@ const emptyFraudConfig = {
   autoCancelMediumRisk: false,
 };
 
-export default function OperationsDashboardPage({ dashboard, filters, testTrackingInjectionEnabled }) {
+export default function OperationsDashboardPage({
+  dashboard,
+  filters,
+  testTrackingInjectionEnabled,
+  fraudTestSimulationEnabled,
+}) {
   const fetcher = useFetcher();
   const actionResult = fetcher.data;
   const fraudAnalytics = dashboard.fraudAnalytics ?? emptyFraudAnalytics;
@@ -184,19 +189,24 @@ export default function OperationsDashboardPage({ dashboard, filters, testTracki
 
       <s-section heading="Fraud order analytics">
         <FraudProtectionSettings config={fraudConfig} fetcher={fetcher} />
+        {fraudTestSimulationEnabled && (
+          <div style={{ marginTop: "12px" }}>
+            <FraudTestSimulationCard fetcher={fetcher} />
+          </div>
+        )}
         <div style={{ marginTop: "12px" }}>
-        <SummaryGrid
-          items={[
-            { label: "Assessed orders", value: fraudAnalytics.totalAssessments },
-            { label: "High risk", value: fraudAnalytics.highRiskCount, tone: "critical" },
-            { label: "Medium risk", value: fraudAnalytics.mediumRiskCount, tone: "critical" },
-            { label: "Low risk", value: fraudAnalytics.lowRiskCount },
-            { label: "Pending risk", value: fraudAnalytics.pendingRiskCount },
-            { label: "Manual review", value: fraudAnalytics.reviewCount, tone: "critical" },
-            { label: "Would cancel dry-run", value: fraudAnalytics.wouldCancelCount, tone: "critical" },
-            { label: "Cancelled", value: fraudAnalytics.cancelledCount, tone: "critical" },
-          ]}
-        />
+          <SummaryGrid
+            items={[
+              { label: "Assessed orders", value: fraudAnalytics.totalAssessments },
+              { label: "High risk", value: fraudAnalytics.highRiskCount, tone: "critical" },
+              { label: "Medium risk", value: fraudAnalytics.mediumRiskCount, tone: "critical" },
+              { label: "Low risk", value: fraudAnalytics.lowRiskCount },
+              { label: "Pending risk", value: fraudAnalytics.pendingRiskCount },
+              { label: "Manual review", value: fraudAnalytics.reviewCount, tone: "critical" },
+              { label: "Would cancel dry-run", value: fraudAnalytics.wouldCancelCount, tone: "critical" },
+              { label: "Cancelled", value: fraudAnalytics.cancelledCount, tone: "critical" },
+            ]}
+          />
         </div>
         <div style={{ marginTop: "12px" }}>
           <DataTable
@@ -374,6 +384,34 @@ function FraudConfigForm({ fetcher, enabled, label, disabled, confirmMessage }) 
         {label}
       </button>
     </fetcher.Form>
+  );
+}
+
+function FraudTestSimulationCard({ fetcher }) {
+  const isSubmitting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "create_fraud_test_assessment";
+
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base" background="default">
+      <div style={{ display: "grid", gap: "10px" }}>
+        <div style={{ fontWeight: 700 }}>Fraud test simulation</div>
+        <s-paragraph>
+          Dev/test only. Creates an internal HIGH-risk fraud assessment without creating a Shopify order.
+        </s-paragraph>
+        <fetcher.Form
+          method="post"
+          onSubmit={(event) => {
+            if (!confirm("Create an internal fraud test assessment? This will not create or cancel a Shopify order.")) {
+              event.preventDefault();
+            }
+          }}
+        >
+          <input type="hidden" name="intent" value="create_fraud_test_assessment" />
+          <button type="submit" disabled={isSubmitting} style={{ ...buttonStyle(isSubmitting), width: "auto", minWidth: "220px" }}>
+            Create fraud test assessment
+          </button>
+        </fetcher.Form>
+      </div>
+    </s-box>
   );
 }
 

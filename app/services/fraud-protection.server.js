@@ -124,6 +124,60 @@ export async function updateFraudProtectionConfig({
   return config;
 }
 
+export async function createFraudTestAssessment({ shop, createdBy }, deps = {}) {
+  if (!shop) throw new Error("Shop is required to create fraud test assessment.");
+
+  const prismaClient = deps.prismaClient || prisma;
+  const now = deps.now || new Date();
+  const timestamp = now.getTime();
+  const config = await getFraudProtectionConfigWithClient(shop, prismaClient);
+  const riskLevel = "HIGH";
+  const decision = getFraudDecision({ config, riskLevel });
+  const orderName = `FRAUD-TEST-${timestamp}`;
+  const shopifyOrderId = `gid://shopify/Order/fraud-test-${timestamp}`;
+
+  const assessment = await prismaClient.fraudOrderAssessment.create({
+    data: {
+      shop,
+      shopifyOrderId,
+      orderName,
+      riskLevel,
+      recommendation: "CANCEL",
+      totalPrice: null,
+      currencyCode: null,
+      displayFinancialStatus: "SIMULATED",
+      displayFulfillmentStatus: "SIMULATED",
+      cancelledAt: null,
+      assessmentStatus: "ASSESSED",
+      decision,
+      actionMode: "DRY_RUN",
+      cancellationStatus: null,
+      cancellationError: null,
+      riskPayload: JSON.stringify({
+        source: "pickvora_internal_fraud_test",
+        simulated: true,
+        note: "No Shopify order was created",
+        createdBy: createdBy ? "admin" : null,
+      }),
+      assessedAt: now,
+    },
+  });
+
+  console.log(JSON.stringify({
+    event: "fraud_test_assessment_created",
+    layer: "fraud_protection",
+    shop,
+    shopifyOrderId,
+    orderName,
+    riskLevel,
+    decision,
+    actionMode: "DRY_RUN",
+    createdBy: createdBy ? "admin" : null,
+  }));
+
+  return assessment;
+}
+
 export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
   const res = await adminFetch(shop, accessToken, `
     query fraudOrderAssessment($id: ID!) {
@@ -350,4 +404,9 @@ function sanitizeFraudProtectionConfig({
     notifyCustomer: false,
     delayMinutes: 2,
   };
+}
+
+async function getFraudProtectionConfigWithClient(shop, prismaClient) {
+  const config = await prismaClient.fraudProtectionConfig.findUnique({ where: { shop } });
+  return config || { shop, ...DEFAULT_FRAUD_PROTECTION_CONFIG };
 }
