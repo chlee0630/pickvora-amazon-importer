@@ -9,6 +9,7 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const FRAUD_HIGH_RISK_OVERRIDE_MARKER = "PICKVORA_FRAUD_HIGH_TEST";
 const DEV_FRAUD_ORDER_CANCEL_SHOP = "pickvora-dev.myshopify.com";
 const FRAUD_ORDER_CANCEL_STAFF_NOTE = "Pickvora dev fraud protection test cancellation";
+const DEV_RESTOCK_TEST_VARIANT_ID = "gid://shopify/ProductVariant/50836887994615";
 const FRAUD_HIGH_RISK_OVERRIDE_EXCLUDED_ORDERS = new Set([
   "#1005",
   "1005",
@@ -55,6 +56,9 @@ const FRAUD_ORDER_CANCEL_BLOCKED_ORDER_REFS = new Set([
   "#1015",
   "1015",
   "gid://shopify/Order/1015",
+  "#1016",
+  "1016",
+  "gid://shopify/Order/1016",
 ]);
 
 export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
@@ -143,17 +147,20 @@ export async function updateFraudProtectionConfig({
   autoCancelHighRisk,
   autoCancelMediumRisk,
   blockZincOnHighRisk,
+  restockInventory,
   updatedBy,
 }, deps = {}) {
   if (!shop) throw new Error("Shop is required to update fraud protection config.");
 
   const prismaClient = deps.prismaClient || prisma;
   const safeConfig = sanitizeFraudProtectionConfig({
+    shop,
     enabled,
     dryRun,
     autoCancelHighRisk,
     autoCancelMediumRisk,
     blockZincOnHighRisk,
+    restockInventory,
   });
 
   const config = await prismaClient.fraudProtectionConfig.upsert({
@@ -191,11 +198,13 @@ export async function updateFraudZincBlockConfig({
   const current = await getFraudProtectionConfigWithClient(shop, prismaClient);
   const enabled = Boolean(blockZincOnHighRisk) ? true : current.enabled;
   const safeConfig = sanitizeFraudProtectionConfig({
+    shop,
     enabled,
     dryRun: true,
     autoCancelHighRisk: Boolean(blockZincOnHighRisk) ? true : current.autoCancelHighRisk,
     autoCancelMediumRisk: false,
     blockZincOnHighRisk,
+    restockInventory: current.restockInventory,
   });
 
   const config = await prismaClient.fraudProtectionConfig.upsert({
@@ -317,11 +326,12 @@ export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
   return res.data?.order || null;
 }
 
-export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderId }, deps = {}) {
+export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderId, restock = false }, deps = {}) {
   const fetchFn = deps.adminFetch || adminFetch;
   if (!isValidShopifyOrderGid(shopifyOrderId)) {
     throw new Error("Invalid Shopify order id for fraud cancellation.");
   }
+  const shouldRestock = Boolean(restock);
 
   const res = await fetchFn(shop, accessToken, `
     mutation cancelFraudOrder(
@@ -356,7 +366,7 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
   `, {
     orderId: shopifyOrderId,
     notifyCustomer: false,
-    restock: false,
+    restock: shouldRestock,
     reason: "FRAUD",
     staffNote: FRAUD_ORDER_CANCEL_STAFF_NOTE,
   }, DEFAULT_TIMEOUT_MS, "fraud_order_cancel");
@@ -600,10 +610,17 @@ export async function handleFraudOrderCancellation({
   }
 
   try {
+    const restock = getFraudOrderRestockOption({
+      shop,
+      order,
+      fraudAssessment,
+      shouldBlockZinc,
+    });
     const cancellation = await cancelOrder({
       shop,
       accessToken,
       shopifyOrderId: assessment.shopifyOrderId,
+      restock,
     });
     const cancellationStatus = cancellation.job?.done ? "CANCELLED" : "REQUESTED";
     await updateFraudCancellationStatus({
@@ -629,6 +646,7 @@ export async function handleFraudOrderCancellation({
       cancellationStatus,
       jobId: cancellation.job?.id || null,
       jobDone: Boolean(cancellation.job?.done),
+      restock,
     });
     return {
       status: cancellationStatus,
@@ -880,6 +898,12 @@ export function canUseFraudOrderCancelForShop(shop) {
   return true;
 }
 
+export function canUseFraudOrderRestockForShop(shop) {
+  if (!canUseFraudOrderCancelForShop(shop)) return false;
+  if (String(process.env.FRAUD_ORDER_RESTOCK_ENABLED || "") !== "true") return false;
+  return true;
+}
+
 export function getFraudOrderCancelEligibility({ shop, order, fraudAssessment, shouldBlockZinc }) {
   const result = fraudAssessment?.result;
   const assessment = result?.assessment;
@@ -897,10 +921,31 @@ export function getFraudOrderCancelEligibility({ shop, order, fraudAssessment, s
   return { allowed: true, reason: "eligible" };
 }
 
+export function getFraudOrderRestockOption({ shop, order, fraudAssessment, shouldBlockZinc }) {
+  const result = fraudAssessment?.result;
+  const assessment = result?.assessment;
+  const orderName = String(order?.name || assessment?.orderName || "").trim();
+  const shopifyOrderId = String(order?.id || assessment?.shopifyOrderId || "").trim();
+
+  if (!canUseFraudOrderRestockForShop(shop)) return false;
+  if (!result?.config?.restockInventory) return false;
+  if (fraudAssessment?.skipped) return false;
+  if (result?.riskLevel !== "HIGH") return false;
+  if (!shouldBlockZinc) return false;
+  if (!isValidShopifyOrderGid(shopifyOrderId)) return false;
+  if (isBlockedFraudOrderCancelRef(orderName) || isBlockedFraudOrderCancelRef(shopifyOrderId)) return false;
+  return orderHasRestockTestVariant(order);
+}
+
 export function isBlockedFraudOrderCancelRef(value) {
   const normalized = String(value || "").trim();
   if (!normalized) return false;
   return FRAUD_ORDER_CANCEL_BLOCKED_ORDER_REFS.has(normalized);
+}
+
+function orderHasRestockTestVariant(order) {
+  const lineItems = order?.lineItems?.nodes || [];
+  return lineItems.some((line) => line?.variant?.id === DEV_RESTOCK_TEST_VARIANT_ID);
 }
 
 export function buildFraudHighRiskOverrideDebugDetails({
@@ -1028,6 +1073,7 @@ function logFraudOrderCancelEvent(event, details = {}) {
     cancellationStatus: details.cancellationStatus,
     jobId: details.jobId,
     jobDone: details.jobDone,
+    restock: details.restock,
     error: details.error,
   }));
 }
@@ -1058,11 +1104,13 @@ function getActionMode({ config, decision }) {
 }
 
 function sanitizeFraudProtectionConfig({
+  shop,
   enabled,
   dryRun,
   autoCancelHighRisk,
   autoCancelMediumRisk,
   blockZincOnHighRisk,
+  restockInventory,
 }) {
   return {
     enabled: Boolean(enabled),
@@ -1071,7 +1119,7 @@ function sanitizeFraudProtectionConfig({
     autoCancelMediumRisk: false,
     blockZincOnHighRisk: Boolean(enabled && blockZincOnHighRisk),
     cancelReason: "FRAUD",
-    restockInventory: false,
+    restockInventory: Boolean(enabled && restockInventory && canUseFraudOrderRestockForShop(shop)),
     refundPayment: false,
     notifyCustomer: false,
     delayMinutes: 2,
