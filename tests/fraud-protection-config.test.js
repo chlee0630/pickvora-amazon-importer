@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildFraudHighRiskOverrideDebugDetails,
   createFraudTestAssessment,
   getFraudHighRiskOverrideForOrder,
+  logFraudHighRiskOverrideDebug,
   updateFraudProtectionConfig,
   updateFraudZincBlockConfig,
 } from "../app/services/fraud-protection.server.js";
@@ -405,6 +407,105 @@ test("getFraudHighRiskOverrideForOrder keeps marker-free orders on the Shopify r
     process.env.NODE_ENV = original.NODE_ENV;
     process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
     process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
+  }
+});
+
+test("buildFraudHighRiskOverrideDebugDetails keeps debug payload restricted to allowed fields", () => {
+  assert.deepEqual(buildFraudHighRiskOverrideDebugDetails({
+    shop: SHOP,
+    orderName: "#1011",
+    hasAddress2: true,
+    address2MarkerMatched: true,
+    fraudTestSimulationAllowed: true,
+    overrideApplied: true,
+    actualRiskLevel: "NONE",
+    finalRiskLevel: "HIGH",
+  }), {
+    shop: SHOP,
+    orderName: "#1011",
+    hasAddress2: true,
+    address2MarkerMatched: true,
+    fraudTestSimulationAllowed: true,
+    overrideApplied: true,
+    actualRiskLevel: "NONE",
+    finalRiskLevel: "HIGH",
+  });
+});
+
+test("logFraudHighRiskOverrideDebug is suppressed in production runtime", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+  };
+  const logs = [];
+  const originalLog = console.log;
+
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.SHOPIFY_APP_ENV = "production";
+    console.log = (...args) => logs.push(args);
+
+    logFraudHighRiskOverrideDebug({
+      shop: SHOP,
+      orderName: "#1011",
+      hasAddress2: true,
+      address2MarkerMatched: true,
+      fraudTestSimulationAllowed: false,
+      overrideApplied: false,
+      actualRiskLevel: "NONE",
+      finalRiskLevel: "NONE",
+    });
+
+    assert.equal(logs.length, 0);
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    console.log = originalLog;
+  }
+});
+
+test("logFraudHighRiskOverrideDebug emits only allowed fields in dev/test runtime", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+  };
+  const logs = [];
+  const originalLog = console.log;
+
+  try {
+    process.env.NODE_ENV = "development";
+    process.env.SHOPIFY_APP_ENV = "";
+    console.log = (...args) => logs.push(args);
+
+    logFraudHighRiskOverrideDebug({
+      shop: SHOP,
+      orderName: "#1011",
+      hasAddress2: true,
+      address2MarkerMatched: true,
+      fraudTestSimulationAllowed: true,
+      overrideApplied: true,
+      actualRiskLevel: "NONE",
+      finalRiskLevel: "HIGH",
+    });
+
+    assert.equal(logs.length, 1);
+    const payload = JSON.parse(logs[0][0]);
+    assert.equal(payload.event, "fraud_high_risk_override_debug");
+    assert.equal(payload.layer, "fraud_protection");
+    assert.equal(payload.shop, SHOP);
+    assert.equal(payload.orderName, "#1011");
+    assert.equal(payload.hasAddress2, true);
+    assert.equal(payload.address2MarkerMatched, true);
+    assert.equal(payload.fraudTestSimulationAllowed, true);
+    assert.equal(payload.overrideApplied, true);
+    assert.equal(payload.actualRiskLevel, "NONE");
+    assert.equal(payload.finalRiskLevel, "HIGH");
+    assert.equal(payload.order, undefined);
+    assert.equal(payload.address2, undefined);
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    console.log = originalLog;
   }
 });
 

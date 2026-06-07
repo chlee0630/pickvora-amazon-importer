@@ -1,6 +1,6 @@
 import prisma from "../db.server.js";
 import { withApiRetry } from "../utils/api-retry.server.js";
-import { canUseFraudTestSimulationForShop } from "../utils/runtime-flags.server.js";
+import { canUseFraudTestSimulationForShop, isProductionRuntime } from "../utils/runtime-flags.server.js";
 import { trackApiCall } from "./monitoring/api-metrics.server.js";
 
 const API_VERSION = "2025-10";
@@ -286,9 +286,20 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
     throw new Error(`Shopify order not found for fraud assessment: ${shopifyOrderId}`);
   }
 
+  const address2 = String(order.shippingAddress?.address2 || "").trim();
   const actualRiskLevel = getHighestRiskLevel(order.risk?.assessments || []);
   const fraudOverride = getFraudHighRiskOverrideForOrder({ shop, order, actualRiskLevel });
   const riskLevel = fraudOverride ? "HIGH" : actualRiskLevel;
+  logFraudHighRiskOverrideDebug({
+    shop,
+    orderName: order.name || null,
+    hasAddress2: Boolean(address2),
+    address2MarkerMatched: address2 === FRAUD_HIGH_RISK_OVERRIDE_MARKER,
+    fraudTestSimulationAllowed: canUseFraudTestSimulationForShop(shop),
+    overrideApplied: Boolean(fraudOverride),
+    actualRiskLevel,
+    finalRiskLevel: riskLevel,
+  });
   const decision = getFraudDecision({ config, riskLevel });
   const actionMode = getActionMode({ config, decision });
   const riskPayload = fraudOverride
@@ -450,6 +461,37 @@ export function getFraudHighRiskOverrideForOrder({ shop, order, actualRiskLevel 
     overriddenRiskLevel: "HIGH",
     devTestOnly: true,
   };
+}
+
+export function buildFraudHighRiskOverrideDebugDetails({
+  shop,
+  orderName,
+  hasAddress2,
+  address2MarkerMatched,
+  fraudTestSimulationAllowed,
+  overrideApplied,
+  actualRiskLevel,
+  finalRiskLevel,
+}) {
+  return {
+    shop,
+    orderName,
+    hasAddress2: Boolean(hasAddress2),
+    address2MarkerMatched: Boolean(address2MarkerMatched),
+    fraudTestSimulationAllowed: Boolean(fraudTestSimulationAllowed),
+    overrideApplied: Boolean(overrideApplied),
+    actualRiskLevel,
+    finalRiskLevel,
+  };
+}
+
+export function logFraudHighRiskOverrideDebug(details) {
+  if (isProductionRuntime()) return;
+  console.log(JSON.stringify({
+    event: "fraud_high_risk_override_debug",
+    layer: "fraud_protection",
+    ...buildFraudHighRiskOverrideDebugDetails(details),
+  }));
 }
 
 function getFraudDecision({ config, riskLevel }) {
