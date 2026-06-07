@@ -2,13 +2,17 @@ import { PrismaClient } from "@prisma/client";
 
 const DEV_SHOP = "pickvora-dev.myshopify.com";
 const PRODUCTION_SHOP = "cmgpwd-ty.myshopify.com";
+const RESTOCK_PRODUCT_ID = "gid://shopify/Product/9994603135223";
+const RESTOCK_VARIANT_ID = "gid://shopify/ProductVariant/50836887994615";
+const RESTOCK_ASIN = "B0RESTOCK1";
+const TEST_SUCCESS_URL = "https://zinc.com/shop/products/test-success";
 
 const CANDIDATE = {
-  asin: "B0RESTOCK1",
+  asin: RESTOCK_ASIN,
   title: "Pickvora Restock Test Product",
-  amazonUrl: "https://zinc.com/shop/products/test-success",
-  shopifyProductId: "gid://shopify/Product/9994603135223",
-  shopifyVariantId: "gid://shopify/ProductVariant/50836887994615",
+  amazonUrl: TEST_SUCCESS_URL,
+  shopifyProductId: RESTOCK_PRODUCT_ID,
+  shopifyVariantId: RESTOCK_VARIANT_ID,
   shopifyHandle: "pickvora-restock-test-product",
   shopifyPrice: 10,
   price: 10,
@@ -32,9 +36,11 @@ const REQUIRED_CREATE_FIELDS = ["asin", "title"];
 async function main() {
   const args = new Set(process.argv.slice(2));
   const applyRequested = args.has("--apply");
-  const targetShop = String(process.env.TARGET_SHOP || DEV_SHOP).trim().toLowerCase();
+  const confirmRequested = args.has("--confirm-dev-restock-mapping");
+  const targetShop = String(process.env.TARGET_SHOP || (applyRequested ? "" : DEV_SHOP)).trim().toLowerCase();
+  const mode = applyRequested ? "apply" : "dry-run";
 
-  assertSafeRuntime({ targetShop, applyRequested });
+  assertSafeRuntime({ targetShop, applyRequested, confirmRequested });
   validateCandidateShape(CANDIDATE);
 
   const prisma = new PrismaClient();
@@ -42,32 +48,59 @@ async function main() {
     const duplicates = await findDuplicateMappings(prisma, CANDIDATE);
     if (duplicates.length > 0) {
       console.log(JSON.stringify({
-        mode: "dry-run",
+        mode,
         status: "blocked",
         reason: "duplicate_mapping_found",
+        writesPerformed: false,
         duplicateCount: duplicates.length,
         duplicates,
       }, null, 2));
       return;
     }
 
+    if (applyRequested) {
+      const created = await prisma.amazonProduct.create({
+        data: CANDIDATE,
+        select: {
+          id: true,
+          asin: true,
+          title: true,
+          shopifyProductId: true,
+          shopifyVariantId: true,
+          shopifyHandle: true,
+          amazonUrl: true,
+          syncStatus: true,
+          filterStatus: true,
+          filterReason: true,
+        },
+      });
+      console.log(JSON.stringify({
+        mode,
+        status: "created",
+        targetShop,
+        writesPerformed: true,
+        amazonProduct: created,
+      }, null, 2));
+      return;
+    }
+
     console.log(JSON.stringify({
-      mode: "dry-run",
+      mode,
       status: "ready",
       targetShop,
       writesPerformed: false,
       requiredFieldsPresent: REQUIRED_CREATE_FIELDS,
       createData: CANDIDATE,
-      nextStep: "Request an explicit apply-capable implementation before creating this mapping.",
+      nextStep: "Run with --apply --confirm-dev-restock-mapping only after explicit approval.",
     }, null, 2));
   } finally {
     await prisma.$disconnect();
   }
 }
 
-function assertSafeRuntime({ targetShop, applyRequested }) {
-  if (applyRequested) {
-    throw new Error("--apply is intentionally disabled in this dry-run-only script.");
+function assertSafeRuntime({ targetShop, applyRequested, confirmRequested }) {
+  if (applyRequested && !confirmRequested) {
+    throw new Error("--apply requires --confirm-dev-restock-mapping.");
   }
   if (targetShop !== DEV_SHOP) {
     throw new Error(`Refusing to run outside dev shop: ${targetShop || "(missing)"}`);
@@ -109,13 +142,16 @@ function validateCandidateShape(data) {
   if (!/^[A-Z0-9]{10}$/.test(data.asin)) {
     throw new Error("Candidate ASIN must be 10 uppercase alphanumeric characters.");
   }
-  if (!/^gid:\/\/shopify\/Product\/[0-9]+$/.test(data.shopifyProductId)) {
-    throw new Error("Candidate shopifyProductId must be a Shopify Product GID.");
+  if (data.asin !== RESTOCK_ASIN) {
+    throw new Error("Candidate ASIN does not match the approved restock test ASIN.");
   }
-  if (!/^gid:\/\/shopify\/ProductVariant\/[0-9]+$/.test(data.shopifyVariantId)) {
-    throw new Error("Candidate shopifyVariantId must be a Shopify ProductVariant GID.");
+  if (data.shopifyProductId !== RESTOCK_PRODUCT_ID) {
+    throw new Error("Candidate shopifyProductId does not match the approved restock test product.");
   }
-  if (data.amazonUrl !== "https://zinc.com/shop/products/test-success") {
+  if (data.shopifyVariantId !== RESTOCK_VARIANT_ID) {
+    throw new Error("Candidate shopifyVariantId does not match the approved restock test variant.");
+  }
+  if (data.amazonUrl !== TEST_SUCCESS_URL) {
     throw new Error("Candidate amazonUrl must remain the Zinc test-success URL.");
   }
 }
@@ -157,7 +193,7 @@ async function findDuplicateMappings(prisma, data) {
 
 main().catch((err) => {
   console.error(JSON.stringify({
-    mode: "dry-run",
+    mode: process.argv.includes("--apply") ? "apply" : "dry-run",
     status: "failed",
     writesPerformed: false,
     error: err?.message || String(err),
