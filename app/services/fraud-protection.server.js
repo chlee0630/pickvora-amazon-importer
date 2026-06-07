@@ -1,4 +1,5 @@
 import prisma from "../db.server.js";
+import { enqueueFraudCancelPollJob } from "../queues/order-queue.server.js";
 import { withApiRetry } from "../utils/api-retry.server.js";
 import { canUseFraudTestSimulationForShop, isProductionRuntime } from "../utils/runtime-flags.server.js";
 import { trackApiCall } from "./monitoring/api-metrics.server.js";
@@ -51,6 +52,9 @@ const FRAUD_ORDER_CANCEL_BLOCKED_ORDER_REFS = new Set([
   "#1014",
   "1014",
   "gid://shopify/Order/1014",
+  "#1015",
+  "1015",
+  "gid://shopify/Order/1015",
 ]);
 
 export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
@@ -391,6 +395,62 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
   };
 }
 
+export async function fetchShopifyCancelJobStatus({ shop, accessToken, cancelJobId }, deps = {}) {
+  const fetchFn = deps.adminFetch || adminFetch;
+  if (!isValidShopifyJobGid(cancelJobId)) {
+    throw new Error("Invalid Shopify job id for fraud cancellation polling.");
+  }
+
+  const res = await fetchFn(shop, accessToken, `
+    query fraudCancelJobStatus($id: ID!) {
+      job(id: $id) {
+        id
+        done
+      }
+    }
+  `, { id: cancelJobId }, DEFAULT_TIMEOUT_MS, "fraud_order_cancel_job_poll");
+
+  if (res.errors?.length) {
+    const error = new Error("Shopify cancel job lookup returned GraphQL errors.");
+    error.code = "ORDER_CANCEL_JOB_GRAPHQL_ERRORS";
+    error.userErrors = res.errors.map((item) => ({
+      message: item?.message || "Shopify GraphQL error",
+    }));
+    throw error;
+  }
+
+  return res.data?.job || null;
+}
+
+export async function fetchShopifyOrderCancellationStatus({ shop, accessToken, shopifyOrderId }, deps = {}) {
+  const fetchFn = deps.adminFetch || adminFetch;
+  if (!isValidShopifyOrderGid(shopifyOrderId)) {
+    throw new Error("Invalid Shopify order id for fraud cancellation polling.");
+  }
+
+  const res = await fetchFn(shop, accessToken, `
+    query fraudCancelOrderStatus($id: ID!) {
+      order(id: $id) {
+        id
+        name
+        cancelledAt
+        cancelReason
+      }
+    }
+  `, { id: shopifyOrderId }, DEFAULT_TIMEOUT_MS, "fraud_order_cancel_order_poll");
+
+  if (res.errors?.length) {
+    const error = new Error("Shopify order cancellation lookup returned GraphQL errors.");
+    error.code = "ORDER_CANCEL_STATUS_GRAPHQL_ERRORS";
+    error.userErrors = res.errors.map((item) => ({
+      message: item?.message || "Shopify GraphQL error",
+    }));
+    throw error;
+  }
+
+  return res.data?.order || null;
+}
+
 export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }, deps = {}) {
   const getConfig = deps.getFraudProtectionConfig || getFraudProtectionConfig;
   const fetchRisk = deps.fetchShopifyOrderRisk || fetchShopifyOrderRisk;
@@ -505,6 +565,7 @@ export async function handleFraudOrderCancellation({
 }, deps = {}) {
   const prismaClient = deps.prismaClient || prisma;
   const cancelOrder = deps.cancelShopifyFraudOrder || cancelShopifyFraudOrder;
+  const enqueueCancelPoll = deps.enqueueFraudCancelPollJob || enqueueFraudCancelPollJob;
   const logEvent = deps.logEvent || logFraudOrderCancelEvent;
   const result = fraudAssessment?.result;
   const order = result?.order;
@@ -552,6 +613,15 @@ export async function handleFraudOrderCancellation({
       cancellationStatus,
       cancellationError: null,
     });
+    if (cancellationStatus === "REQUESTED" && cancellation.job?.id) {
+      await enqueueCancelPoll({
+        shop,
+        shopifyOrderId: assessment.shopifyOrderId,
+        provider: "zinc",
+        cancelJobId: cancellation.job.id,
+        requestedAt: new Date().toISOString(),
+      });
+    }
     logEvent("fraud_order_cancel_requested", {
       shop,
       shopifyOrderId: assessment.shopifyOrderId,
@@ -581,6 +651,136 @@ export async function handleFraudOrderCancellation({
     });
     return { status: "FAILED", error: cancellationError };
   }
+}
+
+export async function processFraudCancelPoll({ job, accessToken }, deps = {}) {
+  const prismaClient = deps.prismaClient || prisma;
+  const fetchJobStatus = deps.fetchShopifyCancelJobStatus || fetchShopifyCancelJobStatus;
+  const fetchOrderStatus = deps.fetchShopifyOrderCancellationStatus || fetchShopifyOrderCancellationStatus;
+  const enqueueCancelPoll = deps.enqueueFraudCancelPollJob || enqueueFraudCancelPollJob;
+  const logEvent = deps.logEvent || logFraudOrderCancelEvent;
+  const shopifyOrderId = String(job?.shopifyOrderId || "").trim();
+
+  if (!canUseFraudOrderCancelForShop(job?.shop)) {
+    logEvent("fraud_order_cancel_poll_skipped", {
+      shop: job?.shop,
+      shopifyOrderId,
+      reason: "fraud_order_cancel_disabled",
+    });
+    return { status: "SKIPPED", reason: "fraud_order_cancel_disabled" };
+  }
+  if (!isValidShopifyOrderGid(shopifyOrderId)) {
+    return { status: "SKIPPED", reason: "invalid_shopify_order_id" };
+  }
+  if (isBlockedFraudOrderCancelRef(shopifyOrderId)) {
+    return { status: "SKIPPED", reason: "blocked_test_order" };
+  }
+
+  const assessment = await prismaClient.fraudOrderAssessment.findUnique({
+    where: {
+      shop_shopifyOrderId: {
+        shop: job.shop,
+        shopifyOrderId,
+      },
+    },
+  });
+  if (!assessment) return { status: "SKIPPED", reason: "assessment_missing" };
+  if (isBlockedFraudOrderCancelRef(assessment.orderName)) {
+    return { status: "SKIPPED", reason: "blocked_test_order" };
+  }
+  if (assessment.cancellationStatus !== "REQUESTED") {
+    return { status: "SKIPPED", reason: "status_not_requested" };
+  }
+
+  const payload = parseFraudCancelPollPayload(job.payload);
+  const cancelJobId = payload.cancelJobId;
+  let jobDone = false;
+  let jobLookupFailed = false;
+
+  if (cancelJobId) {
+    try {
+      const cancelJob = await fetchJobStatus({
+        shop: job.shop,
+        accessToken,
+        cancelJobId,
+      });
+      jobDone = Boolean(cancelJob?.done);
+    } catch (err) {
+      jobLookupFailed = true;
+      logEvent("fraud_order_cancel_job_poll_failed", {
+        shop: job.shop,
+        shopifyOrderId,
+        error: summarizeOrderCancelError(err),
+      });
+    }
+  }
+
+  if (jobDone || jobLookupFailed || !cancelJobId) {
+    const order = await fetchOrderStatus({
+      shop: job.shop,
+      accessToken,
+      shopifyOrderId,
+    });
+    if (order?.cancelledAt || order?.cancelReason) {
+      await updateFraudCancellationStatus({
+        prismaClient,
+        shop: job.shop,
+        shopifyOrderId,
+        cancellationStatus: "CANCELLED",
+        cancellationError: null,
+      });
+      logEvent("fraud_order_cancel_confirmed", {
+        shop: job.shop,
+        shopifyOrderId,
+        orderName: assessment.orderName || order?.name || null,
+        cancellationStatus: "CANCELLED",
+        jobId: cancelJobId || null,
+        jobDone,
+      });
+      return { status: "CANCELLED" };
+    }
+    if (jobLookupFailed) {
+      if (isFraudCancelPollExhausted(job)) {
+        return markFraudCancelPollStale({
+          prismaClient,
+          shop: job.shop,
+          shopifyOrderId,
+          reason: "Shopify cancel job lookup failed and order is not cancelled.",
+        });
+      }
+      const error = new Error("Shopify cancel job lookup failed and order is not cancelled yet.");
+      error.retryable = true;
+      error.code = "ORDER_CANCEL_JOB_LOOKUP_RETRY";
+      throw error;
+    }
+  }
+
+  if (isFraudCancelPollExhausted(job)) {
+    return markFraudCancelPollStale({
+      prismaClient,
+      shop: job.shop,
+      shopifyOrderId,
+      reason: "Shopify order cancellation was not confirmed before poll timeout.",
+    });
+  }
+
+  await enqueueCancelPoll({
+    shop: job.shop,
+    shopifyOrderId,
+    provider: job.provider,
+    cancelJobId,
+    requestedAt: payload.requestedAt || new Date().toISOString(),
+    delayMs: getFraudCancelPollDelayMs(job.attempts),
+    rescheduleExisting: true,
+  });
+  logEvent("fraud_order_cancel_poll_pending", {
+    shop: job.shop,
+    shopifyOrderId,
+    cancellationStatus: "REQUESTED",
+    jobId: cancelJobId || null,
+    jobDone,
+  });
+  return { status: "REQUESTED", retryScheduled: true };
 }
 
 export async function getFraudAnalyticsDashboard(shop) {
@@ -757,6 +957,46 @@ async function updateFraudCancellationStatus({
 
 function isValidShopifyOrderGid(value) {
   return /^gid:\/\/shopify\/Order\/[0-9]+$/.test(String(value || "").trim());
+}
+
+function isValidShopifyJobGid(value) {
+  return /^gid:\/\/shopify\/Job\/[A-Za-z0-9-]+$/.test(String(value || "").trim());
+}
+
+function parseFraudCancelPollPayload(payload) {
+  if (!payload) return {};
+  try {
+    const parsed = JSON.parse(payload);
+    if (!parsed || typeof parsed !== "object") return {};
+    return {
+      cancelJobId: typeof parsed.cancelJobId === "string" ? parsed.cancelJobId : null,
+      requestedAt: typeof parsed.requestedAt === "string" ? parsed.requestedAt : null,
+      source: typeof parsed.source === "string" ? parsed.source : null,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function isFraudCancelPollExhausted(job) {
+  return Number(job?.attempts || 0) >= Number(job?.maxAttempts || 8);
+}
+
+function getFraudCancelPollDelayMs(attempts) {
+  const delays = [30 * 1000, 60 * 1000, 2 * 60 * 1000, 5 * 60 * 1000];
+  return delays[Math.min(Math.max(Number(attempts || 1) - 1, 0), delays.length - 1)];
+}
+
+async function markFraudCancelPollStale({ prismaClient, shop, shopifyOrderId, reason }) {
+  const cancellationError = String(reason || "Shopify order cancellation was not confirmed.").slice(0, 1000);
+  await updateFraudCancellationStatus({
+    prismaClient,
+    shop,
+    shopifyOrderId,
+    cancellationStatus: "STALE",
+    cancellationError,
+  });
+  return { status: "STALE", error: cancellationError };
 }
 
 function summarizeOrderCancelError(err) {

@@ -115,6 +115,89 @@ export async function enqueueTrackingPollJob({
   return job;
 }
 
+export async function enqueueFraudCancelPollJob({
+  shop,
+  shopifyOrderId,
+  provider = "zinc",
+  cancelJobId,
+  requestedAt,
+  delayMs = 30 * 1000,
+  rescheduleExisting = false,
+}) {
+  const runAt = new Date(Date.now() + delayMs);
+  const payload = {
+    cancelJobId: cancelJobId || null,
+    requestedAt: requestedAt || new Date().toISOString(),
+    source: "fraud_order_cancel",
+  };
+  const existingJob = await prisma.orderQueueJob.findUnique({
+    where: {
+      shop_type_shopifyOrderId: {
+        shop,
+        type: "fraud.cancel.poll",
+        shopifyOrderId,
+      },
+    },
+  });
+
+  if (
+    existingJob &&
+    (existingJob.status === "pending" || (existingJob.status === "processing" && !rescheduleExisting))
+  ) {
+    logQueueEvent("fraud_cancel_poll_duplicate_skipped", {
+      jobId: existingJob.id,
+      shop,
+      type: "fraud.cancel.poll",
+      shopifyOrderId,
+      provider,
+      status: existingJob.status,
+    });
+    return existingJob;
+  }
+
+  const job = await prisma.orderQueueJob.upsert({
+    where: {
+      shop_type_shopifyOrderId: {
+        shop,
+        type: "fraud.cancel.poll",
+        shopifyOrderId,
+      },
+    },
+    create: {
+      shop,
+      type: "fraud.cancel.poll",
+      shopifyOrderId,
+      provider,
+      payload: JSON.stringify(payload),
+      runAt,
+      maxAttempts: 8,
+    },
+    update: {
+      status: "pending",
+      payload: JSON.stringify(payload),
+      runAt,
+      lockedAt: null,
+      completedAt: null,
+      lastError: null,
+      failureReason: null,
+      failureCategory: null,
+      dlqStatus: null,
+      lastFailureAt: null,
+    },
+  });
+
+  logQueueEvent("fraud_cancel_poll_job_enqueued", {
+    jobId: job.id,
+    shop,
+    type: job.type,
+    shopifyOrderId,
+    provider,
+  });
+  scheduleOrderWorkerRun(delayMs);
+  scheduleQueueHealthCheck();
+  return job;
+}
+
 export async function enqueueFulfillmentUpdateJob({ shop, shopifyOrderId, provider = "zinc", payload }) {
   const job = await prisma.orderQueueJob.upsert({
     where: {

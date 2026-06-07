@@ -23,6 +23,7 @@ import {
   assessOrderFraudRisk,
   getFraudProtectionConfig,
   handleFraudOrderCancellation,
+  processFraudCancelPoll,
 } from "../services/fraud-protection.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
@@ -59,19 +60,21 @@ export async function runOrderWorkerOnce() {
 }
 
 async function drainOrderJobs() {
-  let job = await claimNextOrderJob({ types: ["order.create"] });
+  let job = await claimNextOrderJob({ types: ["order.create", "fraud.cancel.poll"] });
   while (job) {
     recordWorkerHeartbeat("order_worker", { shop: job.shop }).catch((err) =>
       console.error("Order worker heartbeat error:", err?.message || err)
     );
     try {
       await trackWorkerJob("order_worker", job, async () => {
-        if (job.type !== "order.create") {
+        if (!["order.create", "fraud.cancel.poll"].includes(job.type)) {
           throw new PermanentOrderError(`Unsupported order job type: ${job.type}`);
         }
 
-        await withTimeout(processCreateOrderJob(job), JOB_TIMEOUT_MS);
-        await completeOrderJob(job.id);
+        const shouldComplete = await withTimeout(processOrderWorkerJob(job), JOB_TIMEOUT_MS);
+        if (shouldComplete !== false) {
+          await completeOrderJob(job.id);
+        }
       }, { timeoutMs: JOB_TIMEOUT_MS });
     } catch (err) {
       logWorkerEvent("order_job_error", job, {
@@ -79,11 +82,13 @@ async function drainOrderJobs() {
         retryable: isRetryableError(err),
       });
 
-      await releaseProviderOrderLock(job, err);
+      if (job.type === "order.create") {
+        await releaseProviderOrderLock(job, err);
+      }
       await failOrderJob(job, err, { retryable: isRetryableError(err) });
     }
 
-    job = await claimNextOrderJob({ types: ["order.create"] });
+    job = await claimNextOrderJob({ types: ["order.create", "fraud.cancel.poll"] });
   }
 }
 
@@ -432,6 +437,20 @@ async function updateProviderFailure(providerOrderId, normalizedError) {
       providerLastAttemptAt: new Date(),
     },
   });
+}
+
+async function processOrderWorkerJob(job) {
+  if (job.type === "fraud.cancel.poll") {
+    const session = await getOfflineSession(job.shop);
+    const result = await processFraudCancelPoll({
+      job,
+      accessToken: session.accessToken,
+    });
+    return result?.retryScheduled ? false : true;
+  }
+
+  await processCreateOrderJob(job);
+  return true;
 }
 
 async function markProviderFraudBlocked(providerOrderId) {

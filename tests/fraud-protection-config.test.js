@@ -7,10 +7,13 @@ import {
   canUseFraudOrderCancelForShop,
   createFraudTestAssessment,
   assessOrderFraudRisk,
+  fetchShopifyCancelJobStatus,
+  fetchShopifyOrderCancellationStatus,
   getFraudHighRiskOverrideForOrder,
   getFraudOrderCancelEligibility,
   handleFraudOrderCancellation,
   logFraudHighRiskOverrideDebug,
+  processFraudCancelPoll,
   updateFraudProtectionConfig,
   updateFraudZincBlockConfig,
 } from "../app/services/fraud-protection.server.js";
@@ -763,6 +766,7 @@ test("handleFraudOrderCancellation calls orderCancel only for HIGH blockable dev
   };
   const calls = [];
   const cancelCalls = [];
+  const enqueueCalls = [];
 
   try {
     process.env.NODE_ENV = "development";
@@ -773,7 +777,7 @@ test("handleFraudOrderCancellation calls orderCancel only for HIGH blockable dev
     const result = await handleFraudOrderCancellation({
       shop: "pickvora-dev.myshopify.com",
       accessToken: "offline_token",
-      fraudAssessment: makeFraudAssessment({ orderName: "#1015" }),
+      fraudAssessment: makeFraudAssessment({ orderName: "#1016" }),
       shouldBlockZinc: true,
     }, {
       prismaClient: makeCancellationPrismaClient(calls),
@@ -781,11 +785,16 @@ test("handleFraudOrderCancellation calls orderCancel only for HIGH blockable dev
         cancelCalls.push(args);
         return { job: { id: "gid://shopify/Job/1", done: false } };
       },
+      enqueueFraudCancelPollJob: async (args) => {
+        enqueueCalls.push(args);
+      },
       logEvent: () => {},
     });
 
     assert.equal(cancelCalls.length, 1);
     assert.equal(cancelCalls[0].shopifyOrderId, "gid://shopify/Order/900001015");
+    assert.equal(enqueueCalls.length, 1);
+    assert.equal(enqueueCalls[0].cancelJobId, "gid://shopify/Job/1");
     assert.equal(result.status, "REQUESTED");
     assert.equal(calls[0].data.cancellationStatus, "REQUESTED");
     assert.equal(calls[0].data.cancellationError, null);
@@ -805,7 +814,7 @@ test("handleFraudOrderCancellation records userErrors and does not change Zinc b
     FRAUD_ORDER_CANCEL_ENABLED: process.env.FRAUD_ORDER_CANCEL_ENABLED,
   };
   const calls = [];
-  const fraudAssessment = makeFraudAssessment({ orderName: "#1015" });
+  const fraudAssessment = makeFraudAssessment({ orderName: "#1016" });
 
   try {
     process.env.NODE_ENV = "development";
@@ -824,6 +833,9 @@ test("handleFraudOrderCancellation records userErrors and does not change Zinc b
         const error = new Error("Shopify orderCancel returned user errors.");
         error.userErrors = [{ code: "ORDER_ALREADY_CANCELLED", message: "Order is already cancelled." }];
         throw error;
+      },
+      enqueueFraudCancelPollJob: async () => {
+        throw new Error("poll should not be enqueued after failed cancellation");
       },
       logEvent: () => {},
     });
@@ -873,6 +885,242 @@ test("cancelShopifyFraudOrder sends only orderCancel with fixed safe options", a
   assert.equal(variables.reason, "FRAUD");
   assert.equal(variables.staffNote, "Pickvora dev fraud protection test cancellation");
   assert.equal(result.job.done, true);
+});
+
+test("fetchShopifyCancelJobStatus uses read-only job query", async () => {
+  const calls = [];
+  const result = await fetchShopifyCancelJobStatus({
+    shop: "pickvora-dev.myshopify.com",
+    accessToken: "offline_token",
+    cancelJobId: "gid://shopify/Job/1",
+  }, {
+    adminFetch: async (...args) => {
+      calls.push(args);
+      return { data: { job: { id: "gid://shopify/Job/1", done: true } } };
+    },
+  });
+
+  const query = calls[0][2];
+  assert.match(query, /query fraudCancelJobStatus/);
+  assert.match(query, /job\(id: \$id\)/);
+  assert.doesNotMatch(query, /mutation/);
+  assert.doesNotMatch(query, /orderCancel/);
+  assert.equal(result.done, true);
+});
+
+test("fetchShopifyOrderCancellationStatus uses read-only order query", async () => {
+  const calls = [];
+  const result = await fetchShopifyOrderCancellationStatus({
+    shop: "pickvora-dev.myshopify.com",
+    accessToken: "offline_token",
+    shopifyOrderId: "gid://shopify/Order/900001016",
+  }, {
+    adminFetch: async (...args) => {
+      calls.push(args);
+      return {
+        data: {
+          order: {
+            id: "gid://shopify/Order/900001016",
+            name: "#1016",
+            cancelledAt: "2026-06-07T00:00:00Z",
+            cancelReason: "FRAUD",
+          },
+        },
+      };
+    },
+  });
+
+  const query = calls[0][2];
+  assert.match(query, /query fraudCancelOrderStatus/);
+  assert.match(query, /order\(id: \$id\)/);
+  assert.doesNotMatch(query, /mutation/);
+  assert.doesNotMatch(query, /orderCancel/);
+  assert.equal(result.cancelledAt, "2026-06-07T00:00:00Z");
+});
+
+test("processFraudCancelPoll marks CANCELLED when job is done and order is cancelled", async () => {
+  const original = setDevCancelEnv();
+  const calls = [];
+  const fetchCalls = [];
+
+  try {
+    const result = await processFraudCancelPoll({
+      job: makeFraudCancelPollJob({ attempts: 2 }),
+      accessToken: "offline_token",
+    }, {
+      prismaClient: makeFraudCancelPollPrismaClient(calls),
+      fetchShopifyCancelJobStatus: async () => {
+        fetchCalls.push("job");
+        return { id: "gid://shopify/Job/1", done: true };
+      },
+      fetchShopifyOrderCancellationStatus: async () => {
+        fetchCalls.push("order");
+        return { id: "gid://shopify/Order/900001016", name: "#1016", cancelledAt: "2026-06-07T00:00:00Z" };
+      },
+      enqueueFraudCancelPollJob: async () => {
+        throw new Error("retry should not be scheduled");
+      },
+      logEvent: () => {},
+    });
+
+    assert.equal(result.status, "CANCELLED");
+    assert.deepEqual(fetchCalls, ["job", "order"]);
+    assert.equal(calls[0].data.cancellationStatus, "CANCELLED");
+    assert.equal(calls[0].data.cancellationError, null);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("processFraudCancelPoll keeps REQUESTED and schedules retry when job is not done", async () => {
+  const original = setDevCancelEnv();
+  const calls = [];
+  const enqueueCalls = [];
+
+  try {
+    const result = await processFraudCancelPoll({
+      job: makeFraudCancelPollJob({ attempts: 2 }),
+      accessToken: "offline_token",
+    }, {
+      prismaClient: makeFraudCancelPollPrismaClient(calls),
+      fetchShopifyCancelJobStatus: async () => ({ id: "gid://shopify/Job/1", done: false }),
+      fetchShopifyOrderCancellationStatus: async () => {
+        throw new Error("order fallback should not be needed while job is pending");
+      },
+      enqueueFraudCancelPollJob: async (args) => {
+        enqueueCalls.push(args);
+      },
+      logEvent: () => {},
+    });
+
+    assert.equal(result.status, "REQUESTED");
+    assert.equal(result.retryScheduled, true);
+    assert.equal(calls.length, 0);
+    assert.equal(enqueueCalls.length, 1);
+    assert.equal(enqueueCalls[0].rescheduleExisting, true);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("processFraudCancelPoll falls back to order status when job lookup fails", async () => {
+  const original = setDevCancelEnv();
+  const calls = [];
+
+  try {
+    const result = await processFraudCancelPoll({
+      job: makeFraudCancelPollJob({ attempts: 2 }),
+      accessToken: "offline_token",
+    }, {
+      prismaClient: makeFraudCancelPollPrismaClient(calls),
+      fetchShopifyCancelJobStatus: async () => {
+        throw Object.assign(new Error("temporary Shopify job lookup failure"), { retryable: true });
+      },
+      fetchShopifyOrderCancellationStatus: async () => ({ id: "gid://shopify/Order/900001016", name: "#1016", cancelledAt: "2026-06-07T00:00:00Z" }),
+      enqueueFraudCancelPollJob: async () => {
+        throw new Error("retry should not be scheduled after cancellation confirmation");
+      },
+      logEvent: () => {},
+    });
+
+    assert.equal(result.status, "CANCELLED");
+    assert.equal(calls[0].data.cancellationStatus, "CANCELLED");
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("processFraudCancelPoll retries transient job lookup failure without touching provider order", async () => {
+  const original = setDevCancelEnv();
+  const calls = [];
+
+  try {
+    await assert.rejects(
+      () => processFraudCancelPoll({
+        job: makeFraudCancelPollJob({ attempts: 2 }),
+        accessToken: "offline_token",
+      }, {
+        prismaClient: makeFraudCancelPollPrismaClient(calls),
+        fetchShopifyCancelJobStatus: async () => {
+          throw Object.assign(new Error("temporary Shopify job lookup failure"), { retryable: true });
+        },
+        fetchShopifyOrderCancellationStatus: async () => ({ id: "gid://shopify/Order/900001016", name: "#1016", cancelledAt: null, cancelReason: null }),
+        enqueueFraudCancelPollJob: async () => {
+          throw new Error("manual retry should go through queue failure handling");
+        },
+        logEvent: () => {},
+      }),
+      /not cancelled yet/
+    );
+
+    assert.equal(calls.length, 0);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("processFraudCancelPoll marks STALE after max attempts", async () => {
+  const original = setDevCancelEnv();
+  const calls = [];
+
+  try {
+    const result = await processFraudCancelPoll({
+      job: makeFraudCancelPollJob({ attempts: 8, maxAttempts: 8 }),
+      accessToken: "offline_token",
+    }, {
+      prismaClient: makeFraudCancelPollPrismaClient(calls),
+      fetchShopifyCancelJobStatus: async () => ({ id: "gid://shopify/Job/1", done: false }),
+      fetchShopifyOrderCancellationStatus: async () => {
+        throw new Error("order fallback should not be needed while job is pending");
+      },
+      enqueueFraudCancelPollJob: async () => {
+        throw new Error("retry should not be scheduled after max attempts");
+      },
+      logEvent: () => {},
+    });
+
+    assert.equal(result.status, "STALE");
+    assert.equal(calls[0].data.cancellationStatus, "STALE");
+    assert.match(calls[0].data.cancellationError, /not confirmed/);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("processFraudCancelPoll skips non-dev, production, and protected historical orders without Shopify queries", async () => {
+  const queryCalls = [];
+  const cases = [
+    { env: () => setDevCancelEnv(), job: makeFraudCancelPollJob({ shop: "cmgpwd-ty.myshopify.com" }) },
+    { env: () => setDevCancelEnv({ NODE_ENV: "production" }), job: makeFraudCancelPollJob() },
+    { env: () => setDevCancelEnv(), job: makeFraudCancelPollJob({ orderName: "#1015" }) },
+  ];
+
+  for (const item of cases) {
+    const original = item.env();
+    try {
+      const result = await processFraudCancelPoll({
+        job: item.job,
+        accessToken: "offline_token",
+      }, {
+        prismaClient: makeFraudCancelPollPrismaClient([], { orderName: item.job.orderName || "#1016" }),
+        fetchShopifyCancelJobStatus: async () => {
+          queryCalls.push("job");
+        },
+        fetchShopifyOrderCancellationStatus: async () => {
+          queryCalls.push("order");
+        },
+        enqueueFraudCancelPollJob: async () => {
+          throw new Error("retry should not be scheduled");
+        },
+        logEvent: () => {},
+      });
+      assert.equal(result.status, "SKIPPED");
+    } finally {
+      restoreEnv(original);
+    }
+  }
+
+  assert.equal(queryCalls.length, 0);
 });
 
 function makePrismaClient(calls) {
@@ -989,4 +1237,77 @@ function makeCancellationPrismaClient(calls) {
       },
     },
   };
+}
+
+function makeFraudCancelPollJob(overrides = {}) {
+  return {
+    id: "fraud-cancel-poll-job-1",
+    shop: overrides.shop || "pickvora-dev.myshopify.com",
+    type: "fraud.cancel.poll",
+    shopifyOrderId: overrides.shopifyOrderId || "gid://shopify/Order/900001016",
+    provider: "zinc",
+    payload: JSON.stringify({
+      cancelJobId: overrides.cancelJobId === undefined ? "gid://shopify/Job/1" : overrides.cancelJobId,
+      requestedAt: "2026-06-07T00:00:00.000Z",
+      source: "fraud_order_cancel",
+    }),
+    attempts: overrides.attempts || 1,
+    maxAttempts: overrides.maxAttempts || 8,
+    orderName: overrides.orderName,
+  };
+}
+
+function makeFraudCancelPollPrismaClient(calls, overrides = {}) {
+  return {
+    fraudOrderAssessment: {
+      findUnique: async () => ({
+        id: "fraud-assessment-1",
+        shop: "pickvora-dev.myshopify.com",
+        shopifyOrderId: "gid://shopify/Order/900001016",
+        orderName: overrides.orderName || "#1016",
+        riskLevel: "HIGH",
+        decision: "WOULD_CANCEL",
+        actionMode: "DRY_RUN",
+        cancellationStatus: overrides.cancellationStatus || "REQUESTED",
+      }),
+      update: async (args) => {
+        calls.push(args);
+        return args.data;
+      },
+    },
+    providerOrder: {
+      get() {
+        throw new Error("ProviderOrder should not be touched by fraud cancel polling");
+      },
+    },
+  };
+}
+
+function setDevCancelEnv(overrides = {}) {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+    FRAUD_ORDER_CANCEL_ENABLED: process.env.FRAUD_ORDER_CANCEL_ENABLED,
+  };
+  process.env.NODE_ENV = overrides.NODE_ENV ?? "development";
+  process.env.SHOPIFY_APP_ENV = overrides.SHOPIFY_APP_ENV ?? "";
+  process.env.SHOP_CUSTOM_DOMAIN = overrides.SHOP_CUSTOM_DOMAIN ?? "";
+  process.env.FRAUD_ORDER_CANCEL_ENABLED = overrides.FRAUD_ORDER_CANCEL_ENABLED ?? "true";
+  return original;
+}
+
+function restoreEnv(original) {
+  restoreEnvValue("NODE_ENV", original.NODE_ENV);
+  restoreEnvValue("SHOPIFY_APP_ENV", original.SHOPIFY_APP_ENV);
+  restoreEnvValue("SHOP_CUSTOM_DOMAIN", original.SHOP_CUSTOM_DOMAIN);
+  restoreEnvValue("FRAUD_ORDER_CANCEL_ENABLED", original.FRAUD_ORDER_CANCEL_ENABLED);
+}
+
+function restoreEnvValue(key, value) {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
 }
