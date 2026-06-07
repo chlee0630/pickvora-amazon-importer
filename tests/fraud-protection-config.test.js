@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createFraudTestAssessment,
+  getFraudHighRiskOverrideForOrder,
   updateFraudProtectionConfig,
   updateFraudZincBlockConfig,
 } from "../app/services/fraud-protection.server.js";
@@ -260,6 +261,153 @@ test("createFraudTestAssessment uses review/allow policy without touching order 
   assert.deepEqual(calls.map((call) => call.model), ["fraudProtectionConfig", "fraudOrderAssessment"]);
 });
 
+test("getFraudHighRiskOverrideForOrder returns null in production runtime", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+  };
+
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.SHOPIFY_APP_ENV = "";
+    process.env.SHOP_CUSTOM_DOMAIN = "";
+
+    assert.equal(getFraudHighRiskOverrideForOrder({
+      shop: SHOP,
+      actualRiskLevel: "LOW",
+      order: makeOrder({
+        name: "#1010",
+        address2: "PICKVORA_FRAUD_HIGH_TEST",
+      }),
+    }), null);
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
+  }
+});
+
+test("getFraudHighRiskOverrideForOrder returns null for protected shop", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+  };
+
+  try {
+    process.env.NODE_ENV = "development";
+    process.env.SHOPIFY_APP_ENV = "";
+    process.env.SHOP_CUSTOM_DOMAIN = SHOP;
+
+    assert.equal(getFraudHighRiskOverrideForOrder({
+      shop: SHOP,
+      actualRiskLevel: "LOW",
+      order: makeOrder({
+        name: "#1010",
+        address2: "PICKVORA_FRAUD_HIGH_TEST",
+      }),
+    }), null);
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
+  }
+});
+
+test("getFraudHighRiskOverrideForOrder returns null for excluded historical test orders", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+  };
+
+  try {
+    process.env.NODE_ENV = "development";
+    process.env.SHOPIFY_APP_ENV = "";
+    process.env.SHOP_CUSTOM_DOMAIN = "";
+
+    for (const orderName of ["#1005", "#1006", "#1007", "#1008", "#1009"]) {
+      assert.equal(getFraudHighRiskOverrideForOrder({
+        shop: SHOP,
+        actualRiskLevel: "LOW",
+        order: makeOrder({
+          name: orderName,
+          address2: "PICKVORA_FRAUD_HIGH_TEST",
+        }),
+      }), null);
+    }
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
+  }
+});
+
+test("getFraudHighRiskOverrideForOrder overrides marker orders in dev/test runtime", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+  };
+
+  try {
+    process.env.NODE_ENV = "development";
+    process.env.SHOPIFY_APP_ENV = "";
+    process.env.SHOP_CUSTOM_DOMAIN = "";
+
+    const override = getFraudHighRiskOverrideForOrder({
+      shop: SHOP,
+      actualRiskLevel: "LOW",
+      order: makeOrder({
+        name: "#1010",
+        address2: "PICKVORA_FRAUD_HIGH_TEST",
+      }),
+    });
+
+    assert.deepEqual(override, {
+      source: "pickvora_dev_test_high_override",
+      markerField: "shippingAddress.address2",
+      markerValue: "PICKVORA_FRAUD_HIGH_TEST",
+      excludedOrders: ["#1005", "1005", "#1006", "1006", "#1007", "1007", "#1008", "1008", "#1009", "1009"],
+      actualRiskLevel: "LOW",
+      overriddenRiskLevel: "HIGH",
+      devTestOnly: true,
+    });
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
+  }
+});
+
+test("getFraudHighRiskOverrideForOrder keeps marker-free orders on the Shopify risk result", () => {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+  };
+
+  try {
+    process.env.NODE_ENV = "development";
+    process.env.SHOPIFY_APP_ENV = "";
+    process.env.SHOP_CUSTOM_DOMAIN = "";
+
+    assert.equal(getFraudHighRiskOverrideForOrder({
+      shop: SHOP,
+      actualRiskLevel: "MEDIUM",
+      order: makeOrder({
+        name: "#1011",
+        address2: "unit 4",
+      }),
+    }), null);
+  } finally {
+    process.env.NODE_ENV = original.NODE_ENV;
+    process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
+    process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
+  }
+});
+
 function makePrismaClient(calls) {
   return {
     fraudProtectionConfig: {
@@ -328,4 +476,13 @@ function makeSimulationPrismaClient(calls, config) {
   }
 
   return client;
+}
+
+function makeOrder({ name, address2 }) {
+  return {
+    name,
+    shippingAddress: {
+      address2,
+    },
+  };
 }

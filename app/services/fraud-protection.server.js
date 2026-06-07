@@ -1,9 +1,23 @@
 import prisma from "../db.server.js";
 import { withApiRetry } from "../utils/api-retry.server.js";
+import { canUseFraudTestSimulationForShop } from "../utils/runtime-flags.server.js";
 import { trackApiCall } from "./monitoring/api-metrics.server.js";
 
 const API_VERSION = "2025-10";
 const DEFAULT_TIMEOUT_MS = 30000;
+const FRAUD_HIGH_RISK_OVERRIDE_MARKER = "PICKVORA_FRAUD_HIGH_TEST";
+const FRAUD_HIGH_RISK_OVERRIDE_EXCLUDED_ORDERS = new Set([
+  "#1005",
+  "1005",
+  "#1006",
+  "1006",
+  "#1007",
+  "1007",
+  "#1008",
+  "1008",
+  "#1009",
+  "1009",
+]);
 
 export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
   enabled: false,
@@ -272,9 +286,17 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
     throw new Error(`Shopify order not found for fraud assessment: ${shopifyOrderId}`);
   }
 
-  const riskLevel = getHighestRiskLevel(order.risk?.assessments || []);
+  const actualRiskLevel = getHighestRiskLevel(order.risk?.assessments || []);
+  const fraudOverride = getFraudHighRiskOverrideForOrder({ shop, order, actualRiskLevel });
+  const riskLevel = fraudOverride ? "HIGH" : actualRiskLevel;
   const decision = getFraudDecision({ config, riskLevel });
   const actionMode = getActionMode({ config, decision });
+  const riskPayload = fraudOverride
+    ? {
+      ...order.risk,
+      override: fraudOverride,
+    }
+    : order.risk || {};
 
   const totalPrice = Number(order.totalPriceSet?.shopMoney?.amount || 0);
   const currencyCode = order.totalPriceSet?.shopMoney?.currencyCode || null;
@@ -300,7 +322,7 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
       assessmentStatus: "ASSESSED",
       decision,
       actionMode,
-      riskPayload: JSON.stringify(order.risk || {}),
+      riskPayload: JSON.stringify(riskPayload),
       assessedAt: new Date(),
     },
     update: {
@@ -315,7 +337,7 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
       assessmentStatus: "ASSESSED",
       decision,
       actionMode,
-      riskPayload: JSON.stringify(order.risk || {}),
+      riskPayload: JSON.stringify(riskPayload),
       assessedAt: new Date(),
       cancellationError: null,
     },
@@ -340,6 +362,7 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
     riskLevel,
     decision,
     actionMode,
+    fraudOverride,
   };
 }
 
@@ -405,6 +428,28 @@ function getHighestRiskLevel(assessments) {
   return assessments
     .map((assessment) => String(assessment.riskLevel || "UNKNOWN").toUpperCase())
     .sort((a, b) => (RISK_PRIORITY[b] || 0) - (RISK_PRIORITY[a] || 0))[0] || "UNKNOWN";
+}
+
+export function getFraudHighRiskOverrideForOrder({ shop, order, actualRiskLevel }) {
+  if (!shop || !order) return null;
+  if (actualRiskLevel === "HIGH") return null;
+  if (!canUseFraudTestSimulationForShop(shop)) return null;
+
+  const orderName = String(order.name || "").trim();
+  if (FRAUD_HIGH_RISK_OVERRIDE_EXCLUDED_ORDERS.has(orderName)) return null;
+
+  const markerValue = String(order.shippingAddress?.address2 || "").trim();
+  if (markerValue !== FRAUD_HIGH_RISK_OVERRIDE_MARKER) return null;
+
+  return {
+    source: "pickvora_dev_test_high_override",
+    markerField: "shippingAddress.address2",
+    markerValue,
+    excludedOrders: Array.from(FRAUD_HIGH_RISK_OVERRIDE_EXCLUDED_ORDERS),
+    actualRiskLevel,
+    overriddenRiskLevel: "HIGH",
+    devTestOnly: true,
+  };
 }
 
 function getFraudDecision({ config, riskLevel }) {
