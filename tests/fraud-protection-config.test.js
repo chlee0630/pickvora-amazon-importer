@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildFraudHighRiskOverrideDebugDetails,
   createFraudTestAssessment,
+  assessOrderFraudRisk,
   getFraudHighRiskOverrideForOrder,
   logFraudHighRiskOverrideDebug,
   updateFraudProtectionConfig,
@@ -507,6 +508,140 @@ test("logFraudHighRiskOverrideDebug emits only allowed fields in dev/test runtim
     process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
     console.log = originalLog;
   }
+});
+
+test("assessOrderFraudRisk applies the dev/test HIGH override when shippingAddress.address2 matches", async () => {
+  const calls = [];
+  const debugCalls = [];
+
+  const result = await assessOrderFraudRisk({
+    shop: "pickvora-dev.myshopify.com",
+    accessToken: "offline_token",
+    shopifyOrderId: "gid://shopify/Order/1013",
+  }, {
+    getFraudProtectionConfig: async () => ({
+      enabled: true,
+      dryRun: true,
+      autoCancelHighRisk: true,
+      autoCancelMediumRisk: false,
+      blockZincOnHighRisk: true,
+    }),
+    fetchShopifyOrderRisk: async () => ({
+      name: "#1013",
+      shippingAddress: {
+        address2: "PICKVORA_FRAUD_HIGH_TEST",
+      },
+      totalPriceSet: {
+        shopMoney: {
+          amount: "123.45",
+          currencyCode: "USD",
+        },
+      },
+      displayFinancialStatus: "PAID",
+      displayFulfillmentStatus: "UNFULFILLED",
+      risk: {
+        assessments: [{ riskLevel: "NONE" }],
+        recommendation: "ALLOW",
+      },
+    }),
+    prismaClient: {
+      fraudOrderAssessment: {
+        upsert: async (args) => {
+          calls.push(args);
+          return {
+            id: "fraud-assessment-1",
+            ...args.create,
+          };
+        },
+      },
+    },
+    logFraudHighRiskOverrideDebug: (details) => debugCalls.push(details),
+  });
+
+  assert.equal(result.riskLevel, "HIGH");
+  assert.equal(result.decision, "WOULD_CANCEL");
+  assert.equal(result.actionMode, "DRY_RUN");
+  assert.equal(debugCalls.length, 1);
+  assert.deepEqual(debugCalls[0], {
+    shop: "pickvora-dev.myshopify.com",
+    orderName: "#1013",
+    hasAddress2: true,
+    address2MarkerMatched: true,
+    fraudTestSimulationAllowed: true,
+    overrideApplied: true,
+    actualRiskLevel: "NONE",
+    finalRiskLevel: "HIGH",
+  });
+  assert.equal(calls[0].create.riskLevel, "HIGH");
+  assert.equal(calls[0].create.decision, "WOULD_CANCEL");
+  assert.match(calls[0].create.riskPayload, /pickvora_dev_test_high_override/);
+});
+
+test("assessOrderFraudRisk keeps the existing flow when shippingAddress.address2 does not match", async () => {
+  const calls = [];
+  const debugCalls = [];
+
+  const result = await assessOrderFraudRisk({
+    shop: "pickvora-dev.myshopify.com",
+    accessToken: "offline_token",
+    shopifyOrderId: "gid://shopify/Order/1014",
+  }, {
+    getFraudProtectionConfig: async () => ({
+      enabled: true,
+      dryRun: true,
+      autoCancelHighRisk: true,
+      autoCancelMediumRisk: false,
+      blockZincOnHighRisk: true,
+    }),
+    fetchShopifyOrderRisk: async () => ({
+      name: "#1014",
+      shippingAddress: {
+        address2: "unit 4",
+      },
+      totalPriceSet: {
+        shopMoney: {
+          amount: "123.45",
+          currencyCode: "USD",
+        },
+      },
+      displayFinancialStatus: "PAID",
+      displayFulfillmentStatus: "UNFULFILLED",
+      risk: {
+        assessments: [{ riskLevel: "LOW" }],
+        recommendation: "ALLOW",
+      },
+    }),
+    prismaClient: {
+      fraudOrderAssessment: {
+        upsert: async (args) => {
+          calls.push(args);
+          return {
+            id: "fraud-assessment-1",
+            ...args.create,
+          };
+        },
+      },
+    },
+    logFraudHighRiskOverrideDebug: (details) => debugCalls.push(details),
+  });
+
+  assert.equal(result.riskLevel, "LOW");
+  assert.equal(result.decision, "ALLOW");
+  assert.equal(result.actionMode, "DRY_RUN");
+  assert.equal(debugCalls.length, 1);
+  assert.deepEqual(debugCalls[0], {
+    shop: "pickvora-dev.myshopify.com",
+    orderName: "#1014",
+    hasAddress2: true,
+    address2MarkerMatched: false,
+    fraudTestSimulationAllowed: true,
+    overrideApplied: false,
+    actualRiskLevel: "LOW",
+    finalRiskLevel: "LOW",
+  });
+  assert.equal(calls[0].create.riskLevel, "LOW");
+  assert.equal(calls[0].create.decision, "ALLOW");
+  assert.doesNotMatch(calls[0].create.riskPayload, /pickvora_dev_test_high_override/);
 });
 
 function makePrismaClient(calls) {

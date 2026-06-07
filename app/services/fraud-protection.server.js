@@ -246,6 +246,9 @@ export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
         cancelledAt
         displayFinancialStatus
         displayFulfillmentStatus
+        shippingAddress {
+          address2
+        }
         totalPriceSet {
           shopMoney {
             amount
@@ -276,10 +279,15 @@ export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
   return res.data?.order || null;
 }
 
-export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }) {
+export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }, deps = {}) {
+  const getConfig = deps.getFraudProtectionConfig || getFraudProtectionConfig;
+  const fetchRisk = deps.fetchShopifyOrderRisk || fetchShopifyOrderRisk;
+  const prismaClient = deps.prismaClient || prisma;
+  const logDebug = deps.logFraudHighRiskOverrideDebug || logFraudHighRiskOverrideDebug;
+
   const [config, order] = await Promise.all([
-    getFraudProtectionConfig(shop),
-    fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId),
+    getConfig(shop),
+    fetchRisk(shop, accessToken, shopifyOrderId),
   ]);
 
   if (!order) {
@@ -290,7 +298,7 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
   const actualRiskLevel = getHighestRiskLevel(order.risk?.assessments || []);
   const fraudOverride = getFraudHighRiskOverrideForOrder({ shop, order, actualRiskLevel });
   const riskLevel = fraudOverride ? "HIGH" : actualRiskLevel;
-  logFraudHighRiskOverrideDebug({
+  logDebug({
     shop,
     orderName: order.name || null,
     hasAddress2: Boolean(address2),
@@ -312,7 +320,7 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
   const totalPrice = Number(order.totalPriceSet?.shopMoney?.amount || 0);
   const currencyCode = order.totalPriceSet?.shopMoney?.currencyCode || null;
 
-  const assessment = await prisma.fraudOrderAssessment.upsert({
+  const assessment = await prismaClient.fraudOrderAssessment.upsert({
     where: {
       shop_shopifyOrderId: {
         shop,
