@@ -5,12 +5,14 @@ import { runAdminOrderAction } from "../services/admin-order-actions.server";
 import {
   createFraudTestAssessment,
   updateFraudProtectionConfig,
+  updateFraudZincBlockConfig,
 } from "../services/fraud-protection.server";
 import { injectTestTracking } from "../services/test-tracking-injection.server";
 import { getOperationsDashboard } from "../services/dashboard.server";
 import { parseDashboardFilters } from "../utils/dashboard-filters.server";
 import {
   canUseFraudTestSimulationForShop,
+  canUseFraudZincBlockControlsForShop,
   canUseTestTrackingInjectionForShop,
 } from "../utils/runtime-flags.server";
 import OperationsDashboardPage from "../pages/operations-dashboard";
@@ -25,6 +27,7 @@ export const loader = async ({ request }) => {
     filters,
     testTrackingInjectionEnabled: canUseTestTrackingInjectionForShop(session.shop),
     fraudTestSimulationEnabled: canUseFraudTestSimulationForShop(session.shop),
+    fraudZincBlockControlsEnabled: canUseFraudZincBlockControlsForShop(session.shop),
   };
 };
 
@@ -42,6 +45,7 @@ export const action = async ({ request }) => {
         dryRun: true,
         autoCancelHighRisk: enabled,
         autoCancelMediumRisk: false,
+        blockZincOnHighRisk: false,
         updatedBy: session.email || session.userId?.toString() || session.shop,
       });
 
@@ -50,6 +54,27 @@ export const action = async ({ request }) => {
         message: enabled
           ? "Dry-run fraud protection enabled. Orders will not be cancelled."
           : "Fraud protection disabled.",
+        config,
+      };
+    }
+
+    if (intent === "update_fraud_zinc_block_config") {
+      if (!canUseFraudZincBlockControlsForShop(session.shop)) {
+        throw new Response("Not found", { status: 404 });
+      }
+
+      const blockZincOnHighRisk = String(form.get("blockZincOnHighRisk") || "") === "true";
+      const config = await updateFraudZincBlockConfig({
+        shop: session.shop,
+        blockZincOnHighRisk,
+        updatedBy: session.email || session.userId?.toString() || session.shop,
+      });
+
+      return {
+        success: true,
+        message: blockZincOnHighRisk
+          ? "Dev/test Zinc block on HIGH fraud risk enabled. Shopify orders will not be cancelled."
+          : "Zinc block on HIGH fraud risk disabled.",
         config,
       };
     }
@@ -111,13 +136,20 @@ export const action = async ({ request }) => {
 };
 
 export default function OperationsDashboard() {
-  const { dashboard, filters, testTrackingInjectionEnabled, fraudTestSimulationEnabled } = useLoaderData();
+  const {
+    dashboard,
+    filters,
+    testTrackingInjectionEnabled,
+    fraudTestSimulationEnabled,
+    fraudZincBlockControlsEnabled,
+  } = useLoaderData();
   return (
     <OperationsDashboardPage
       dashboard={dashboard}
       filters={filters}
       testTrackingInjectionEnabled={testTrackingInjectionEnabled}
       fraudTestSimulationEnabled={fraudTestSimulationEnabled}
+      fraudZincBlockControlsEnabled={fraudZincBlockControlsEnabled}
     />
   );
 }

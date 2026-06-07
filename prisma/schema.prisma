@@ -362,6 +362,7 @@ model FraudProtectionConfig {
   dryRun               Boolean  @default(true)
   autoCancelHighRisk   Boolean  @default(false)
   autoCancelMediumRisk Boolean  @default(false)
+  blockZincOnHighRisk  Boolean  @default(false)
   cancelReason         String   @default("FRAUD")
   restockInventory     Boolean  @default(true)
   refundPayment        Boolean  @default(true)

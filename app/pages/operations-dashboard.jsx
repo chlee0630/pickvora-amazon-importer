@@ -91,6 +91,7 @@ const emptyFraudConfig = {
   dryRun: true,
   autoCancelHighRisk: false,
   autoCancelMediumRisk: false,
+  blockZincOnHighRisk: false,
 };
 
 export default function OperationsDashboardPage({
@@ -98,6 +99,7 @@ export default function OperationsDashboardPage({
   filters,
   testTrackingInjectionEnabled,
   fraudTestSimulationEnabled,
+  fraudZincBlockControlsEnabled,
 }) {
   const fetcher = useFetcher();
   const actionResult = fetcher.data;
@@ -188,7 +190,11 @@ export default function OperationsDashboardPage({
       </s-section>
 
       <s-section heading="Fraud order analytics">
-        <FraudProtectionSettings config={fraudConfig} fetcher={fetcher} />
+        <FraudProtectionSettings
+          config={fraudConfig}
+          fetcher={fetcher}
+          fraudZincBlockControlsEnabled={fraudZincBlockControlsEnabled}
+        />
         {fraudTestSimulationEnabled && (
           <div style={{ marginTop: "12px" }}>
             <FraudTestSimulationCard fetcher={fetcher} />
@@ -332,10 +338,13 @@ function formatMoney(amount, currencyCode) {
   return currencyCode ? `${amount} ${currencyCode}` : String(amount);
 }
 
-function FraudProtectionSettings({ config, fetcher }) {
-  const isSubmitting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "update_fraud_protection_config";
+function FraudProtectionSettings({ config, fetcher, fraudZincBlockControlsEnabled }) {
+  const activeIntent = fetcher.state !== "idle" ? fetcher.formData?.get("intent") : null;
+  const isSubmitting = activeIntent === "update_fraud_protection_config";
+  const isZincBlockSubmitting = activeIntent === "update_fraud_zinc_block_config";
   const enabled = Boolean(config.enabled);
   const highRiskAction = enabled && config.autoCancelHighRisk ? "Would cancel" : "Review only";
+  const blockZincOnHighRisk = Boolean(config.blockZincOnHighRisk);
 
   return (
     <s-box padding="base" borderWidth="base" borderRadius="base" background="default">
@@ -347,6 +356,11 @@ function FraudProtectionSettings({ config, fetcher }) {
             { label: "Mode", value: "Dry-run only" },
             { label: "High-risk action", value: highRiskAction, tone: highRiskAction === "Would cancel" ? "critical" : undefined },
             { label: "Medium-risk action", value: "Review only" },
+            {
+              label: "Zinc block on high risk",
+              value: blockZincOnHighRisk ? "Enabled" : "Disabled",
+              tone: blockZincOnHighRisk ? "critical" : undefined,
+            },
           ]}
         />
         <s-stack direction="inline" gap="base" style={{ flexWrap: "wrap" }}>
@@ -365,6 +379,32 @@ function FraudProtectionSettings({ config, fetcher }) {
             confirmMessage="Disable fraud protection?"
           />
         </s-stack>
+        {fraudZincBlockControlsEnabled && (
+          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+            <div style={{ display: "grid", gap: "10px" }}>
+              <div style={{ fontWeight: 700 }}>Dev/test Zinc block controls</div>
+              <s-paragraph>
+                Dev/test only. HIGH fraud risk can stop Zinc submission, but Shopify orders are not cancelled.
+              </s-paragraph>
+              <s-stack direction="inline" gap="base" style={{ flexWrap: "wrap" }}>
+                <FraudZincBlockForm
+                  fetcher={fetcher}
+                  blockZincOnHighRisk
+                  label="Enable Zinc block on HIGH risk"
+                  disabled={isZincBlockSubmitting || blockZincOnHighRisk}
+                  confirmMessage="Enable dev/test Zinc block on HIGH fraud risk? This will not cancel Shopify orders."
+                />
+                <FraudZincBlockForm
+                  fetcher={fetcher}
+                  blockZincOnHighRisk={false}
+                  label="Disable Zinc block on HIGH risk"
+                  disabled={isZincBlockSubmitting || !blockZincOnHighRisk}
+                  confirmMessage="Disable Zinc block on HIGH fraud risk?"
+                />
+              </s-stack>
+            </div>
+          </s-box>
+        )}
       </div>
     </s-box>
   );
@@ -381,6 +421,23 @@ function FraudConfigForm({ fetcher, enabled, label, disabled, confirmMessage }) 
       <input type="hidden" name="intent" value="update_fraud_protection_config" />
       <input type="hidden" name="enabled" value={enabled ? "true" : "false"} />
       <button type="submit" disabled={disabled} style={{ ...buttonStyle(disabled), width: "auto", minWidth: "220px" }}>
+        {label}
+      </button>
+    </fetcher.Form>
+  );
+}
+
+function FraudZincBlockForm({ fetcher, blockZincOnHighRisk, label, disabled, confirmMessage }) {
+  return (
+    <fetcher.Form
+      method="post"
+      onSubmit={(event) => {
+        if (!confirm(confirmMessage)) event.preventDefault();
+      }}
+    >
+      <input type="hidden" name="intent" value="update_fraud_zinc_block_config" />
+      <input type="hidden" name="blockZincOnHighRisk" value={blockZincOnHighRisk ? "true" : "false"} />
+      <button type="submit" disabled={disabled} style={{ ...buttonStyle(disabled), width: "auto", minWidth: "240px" }}>
         {label}
       </button>
     </fetcher.Form>

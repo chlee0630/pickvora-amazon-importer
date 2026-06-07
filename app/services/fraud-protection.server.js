@@ -10,6 +10,7 @@ export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
   dryRun: true,
   autoCancelHighRisk: false,
   autoCancelMediumRisk: false,
+  blockZincOnHighRisk: false,
   cancelReason: "FRAUD",
   restockInventory: true,
   refundPayment: true,
@@ -89,6 +90,7 @@ export async function updateFraudProtectionConfig({
   dryRun,
   autoCancelHighRisk,
   autoCancelMediumRisk,
+  blockZincOnHighRisk,
   updatedBy,
 }, deps = {}) {
   if (!shop) throw new Error("Shop is required to update fraud protection config.");
@@ -99,6 +101,7 @@ export async function updateFraudProtectionConfig({
     dryRun,
     autoCancelHighRisk,
     autoCancelMediumRisk,
+    blockZincOnHighRisk,
   });
 
   const config = await prismaClient.fraudProtectionConfig.upsert({
@@ -118,6 +121,48 @@ export async function updateFraudProtectionConfig({
     dryRun: config.dryRun,
     autoCancelHighRisk: config.autoCancelHighRisk,
     autoCancelMediumRisk: config.autoCancelMediumRisk,
+    blockZincOnHighRisk: config.blockZincOnHighRisk,
+    updatedBy: updatedBy ? "admin" : null,
+  }));
+
+  return config;
+}
+
+export async function updateFraudZincBlockConfig({
+  shop,
+  blockZincOnHighRisk,
+  updatedBy,
+}, deps = {}) {
+  if (!shop) throw new Error("Shop is required to update fraud Zinc block config.");
+
+  const prismaClient = deps.prismaClient || prisma;
+  const current = await getFraudProtectionConfigWithClient(shop, prismaClient);
+  const enabled = Boolean(blockZincOnHighRisk) ? true : current.enabled;
+  const safeConfig = sanitizeFraudProtectionConfig({
+    enabled,
+    dryRun: true,
+    autoCancelHighRisk: Boolean(blockZincOnHighRisk) ? true : current.autoCancelHighRisk,
+    autoCancelMediumRisk: false,
+    blockZincOnHighRisk,
+  });
+
+  const config = await prismaClient.fraudProtectionConfig.upsert({
+    where: { shop },
+    create: {
+      shop,
+      ...safeConfig,
+    },
+    update: safeConfig,
+  });
+
+  console.log(JSON.stringify({
+    event: "fraud_zinc_block_config_updated",
+    layer: "fraud_protection",
+    shop,
+    enabled: config.enabled,
+    dryRun: config.dryRun,
+    autoCancelHighRisk: config.autoCancelHighRisk,
+    blockZincOnHighRisk: config.blockZincOnHighRisk,
     updatedBy: updatedBy ? "admin" : null,
   }));
 
@@ -392,12 +437,14 @@ function sanitizeFraudProtectionConfig({
   dryRun,
   autoCancelHighRisk,
   autoCancelMediumRisk,
+  blockZincOnHighRisk,
 }) {
   return {
     enabled: Boolean(enabled),
     dryRun: true,
     autoCancelHighRisk: Boolean(enabled && autoCancelHighRisk),
     autoCancelMediumRisk: false,
+    blockZincOnHighRisk: Boolean(enabled && blockZincOnHighRisk),
     cancelReason: "FRAUD",
     restockInventory: false,
     refundPayment: false,
