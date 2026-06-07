@@ -6,6 +6,8 @@ import { trackApiCall } from "./monitoring/api-metrics.server.js";
 const API_VERSION = "2025-10";
 const DEFAULT_TIMEOUT_MS = 30000;
 const FRAUD_HIGH_RISK_OVERRIDE_MARKER = "PICKVORA_FRAUD_HIGH_TEST";
+const DEV_FRAUD_ORDER_CANCEL_SHOP = "pickvora-dev.myshopify.com";
+const FRAUD_ORDER_CANCEL_STAFF_NOTE = "Pickvora dev fraud protection test cancellation";
 const FRAUD_HIGH_RISK_OVERRIDE_EXCLUDED_ORDERS = new Set([
   "#1005",
   "1005",
@@ -17,6 +19,38 @@ const FRAUD_HIGH_RISK_OVERRIDE_EXCLUDED_ORDERS = new Set([
   "1008",
   "#1009",
   "1009",
+]);
+const FRAUD_ORDER_CANCEL_BLOCKED_ORDER_REFS = new Set([
+  "#1005",
+  "1005",
+  "gid://shopify/Order/1005",
+  "#1006",
+  "1006",
+  "gid://shopify/Order/1006",
+  "#1007",
+  "1007",
+  "gid://shopify/Order/1007",
+  "#1008",
+  "1008",
+  "gid://shopify/Order/1008",
+  "#1009",
+  "1009",
+  "gid://shopify/Order/1009",
+  "#1010",
+  "1010",
+  "gid://shopify/Order/1010",
+  "#1011",
+  "1011",
+  "gid://shopify/Order/1011",
+  "#1012",
+  "1012",
+  "gid://shopify/Order/1012",
+  "#1013",
+  "1013",
+  "gid://shopify/Order/1013",
+  "#1014",
+  "1014",
+  "gid://shopify/Order/1014",
 ]);
 
 export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
@@ -53,8 +87,8 @@ const RISK_PRIORITY = {
   UNKNOWN: 0,
 };
 
-async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return withApiRetry(() => trackApiCall("shopify", "fraud_risk_fetch", async () => {
+async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = DEFAULT_TIMEOUT_MS, operationName = "fraud_risk_fetch") {
+  return withApiRetry(() => trackApiCall("shopify", operationName, async () => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -89,7 +123,7 @@ async function adminFetch(shop, accessToken, query, variables = {}, timeoutMs = 
     }
   }, { shop, timeoutMs }), {
     provider: "shopify",
-    operationName: "fraud_risk_fetch",
+    operationName,
   });
 }
 
@@ -279,6 +313,84 @@ export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
   return res.data?.order || null;
 }
 
+export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderId }, deps = {}) {
+  const fetchFn = deps.adminFetch || adminFetch;
+  if (!isValidShopifyOrderGid(shopifyOrderId)) {
+    throw new Error("Invalid Shopify order id for fraud cancellation.");
+  }
+
+  const res = await fetchFn(shop, accessToken, `
+    mutation cancelFraudOrder(
+      $orderId: ID!
+      $notifyCustomer: Boolean
+      $restock: Boolean!
+      $reason: OrderCancelReason!
+      $staffNote: String
+    ) {
+      orderCancel(
+        orderId: $orderId
+        notifyCustomer: $notifyCustomer
+        restock: $restock
+        reason: $reason
+        staffNote: $staffNote
+      ) {
+        job {
+          id
+          done
+        }
+        orderCancelUserErrors {
+          field
+          message
+          code
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `, {
+    orderId: shopifyOrderId,
+    notifyCustomer: false,
+    restock: false,
+    reason: "FRAUD",
+    staffNote: FRAUD_ORDER_CANCEL_STAFF_NOTE,
+  }, DEFAULT_TIMEOUT_MS, "fraud_order_cancel");
+
+  if (res.errors?.length) {
+    const error = new Error("Shopify orderCancel returned GraphQL errors.");
+    error.code = "ORDER_CANCEL_GRAPHQL_ERRORS";
+    error.userErrors = res.errors.map((item) => ({
+      message: item?.message || "Shopify GraphQL error",
+    }));
+    throw error;
+  }
+
+  const payload = res.data?.orderCancel || {};
+  const userErrors = [
+    ...(payload.orderCancelUserErrors || []),
+    ...(payload.userErrors || []),
+  ];
+  if (userErrors.length) {
+    const error = new Error("Shopify orderCancel returned user errors.");
+    error.code = "ORDER_CANCEL_USER_ERRORS";
+    error.userErrors = userErrors;
+    throw error;
+  }
+
+  return {
+    job: payload.job || null,
+    responsePayload: {
+      job: payload.job
+        ? {
+          id: payload.job.id || null,
+          done: Boolean(payload.job.done),
+        }
+        : null,
+    },
+  };
+}
+
 export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }, deps = {}) {
   const getConfig = deps.getFraudProtectionConfig || getFraudProtectionConfig;
   const fetchRisk = deps.fetchShopifyOrderRisk || fetchShopifyOrderRisk;
@@ -385,6 +497,92 @@ export async function assessOrderFraudRisk({ shop, accessToken, shopifyOrderId }
   };
 }
 
+export async function handleFraudOrderCancellation({
+  shop,
+  accessToken,
+  fraudAssessment,
+  shouldBlockZinc,
+}, deps = {}) {
+  const prismaClient = deps.prismaClient || prisma;
+  const cancelOrder = deps.cancelShopifyFraudOrder || cancelShopifyFraudOrder;
+  const logEvent = deps.logEvent || logFraudOrderCancelEvent;
+  const result = fraudAssessment?.result;
+  const order = result?.order;
+  const assessment = result?.assessment;
+
+  if (fraudAssessment?.skipped || !assessment?.shopifyOrderId || result?.riskLevel !== "HIGH" || !shouldBlockZinc) {
+    return { status: "SKIPPED", reason: "not_cancel_candidate" };
+  }
+
+  const eligibility = getFraudOrderCancelEligibility({
+    shop,
+    order,
+    fraudAssessment,
+    shouldBlockZinc,
+  });
+
+  if (!eligibility.allowed) {
+    await updateFraudCancellationStatus({
+      prismaClient,
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      cancellationStatus: "SKIPPED",
+      cancellationError: eligibility.reason,
+    });
+    logEvent("fraud_order_cancel_skipped", {
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      orderName: assessment.orderName || order?.name || null,
+      reason: eligibility.reason,
+    });
+    return { status: "SKIPPED", reason: eligibility.reason };
+  }
+
+  try {
+    const cancellation = await cancelOrder({
+      shop,
+      accessToken,
+      shopifyOrderId: assessment.shopifyOrderId,
+    });
+    const cancellationStatus = cancellation.job?.done ? "CANCELLED" : "REQUESTED";
+    await updateFraudCancellationStatus({
+      prismaClient,
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      cancellationStatus,
+      cancellationError: null,
+    });
+    logEvent("fraud_order_cancel_requested", {
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      orderName: assessment.orderName || order?.name || null,
+      cancellationStatus,
+      jobId: cancellation.job?.id || null,
+      jobDone: Boolean(cancellation.job?.done),
+    });
+    return {
+      status: cancellationStatus,
+      job: cancellation.job || null,
+    };
+  } catch (err) {
+    const cancellationError = summarizeOrderCancelError(err);
+    await updateFraudCancellationStatus({
+      prismaClient,
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      cancellationStatus: "FAILED",
+      cancellationError,
+    });
+    logEvent("fraud_order_cancel_failed", {
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      orderName: assessment.orderName || order?.name || null,
+      error: cancellationError,
+    });
+    return { status: "FAILED", error: cancellationError };
+  }
+}
+
 export async function getFraudAnalyticsDashboard(shop) {
   const [
     totalAssessments,
@@ -471,6 +669,40 @@ export function getFraudHighRiskOverrideForOrder({ shop, order, actualRiskLevel 
   };
 }
 
+export function canUseFraudOrderCancelForShop(shop) {
+  if (isProductionRuntime()) return false;
+  if (String(process.env.FRAUD_ORDER_CANCEL_ENABLED || "") !== "true") return false;
+  if (!shop) return false;
+  const normalizedShop = String(shop).trim().toLowerCase();
+  if (normalizedShop !== DEV_FRAUD_ORDER_CANCEL_SHOP) return false;
+  const protectedShop = String(process.env.SHOP_CUSTOM_DOMAIN || "").trim().toLowerCase();
+  if (protectedShop && normalizedShop === protectedShop) return false;
+  return true;
+}
+
+export function getFraudOrderCancelEligibility({ shop, order, fraudAssessment, shouldBlockZinc }) {
+  const result = fraudAssessment?.result;
+  const assessment = result?.assessment;
+  const orderName = String(order?.name || assessment?.orderName || "").trim();
+  const shopifyOrderId = String(order?.id || assessment?.shopifyOrderId || "").trim();
+
+  if (fraudAssessment?.skipped) return { allowed: false, reason: "fraud_assessment_skipped" };
+  if (!canUseFraudOrderCancelForShop(shop)) return { allowed: false, reason: "fraud_order_cancel_disabled" };
+  if (result?.riskLevel !== "HIGH") return { allowed: false, reason: "risk_not_high" };
+  if (!shouldBlockZinc) return { allowed: false, reason: "zinc_block_not_enabled" };
+  if (isBlockedFraudOrderCancelRef(orderName) || isBlockedFraudOrderCancelRef(shopifyOrderId)) {
+    return { allowed: false, reason: "blocked_test_order" };
+  }
+  if (!isValidShopifyOrderGid(shopifyOrderId)) return { allowed: false, reason: "invalid_shopify_order_id" };
+  return { allowed: true, reason: "eligible" };
+}
+
+export function isBlockedFraudOrderCancelRef(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  return FRAUD_ORDER_CANCEL_BLOCKED_ORDER_REFS.has(normalized);
+}
+
 export function buildFraudHighRiskOverrideDebugDetails({
   shop,
   orderName,
@@ -499,6 +731,64 @@ export function logFraudHighRiskOverrideDebug(details) {
     event: "fraud_high_risk_override_debug",
     layer: "fraud_protection",
     ...buildFraudHighRiskOverrideDebugDetails(details),
+  }));
+}
+
+async function updateFraudCancellationStatus({
+  prismaClient,
+  shop,
+  shopifyOrderId,
+  cancellationStatus,
+  cancellationError,
+}) {
+  await prismaClient.fraudOrderAssessment.update({
+    where: {
+      shop_shopifyOrderId: {
+        shop,
+        shopifyOrderId,
+      },
+    },
+    data: {
+      cancellationStatus,
+      cancellationError,
+    },
+  });
+}
+
+function isValidShopifyOrderGid(value) {
+  return /^gid:\/\/shopify\/Order\/[0-9]+$/.test(String(value || "").trim());
+}
+
+function summarizeOrderCancelError(err) {
+  const userErrors = Array.isArray(err?.userErrors) ? err.userErrors : [];
+  if (userErrors.length) {
+    return userErrors
+      .slice(0, 3)
+      .map((item) => {
+        const code = item?.code ? `${String(item.code).slice(0, 80)}: ` : "";
+        return `${code}${String(item?.message || "Shopify orderCancel user error").slice(0, 240)}`;
+      })
+      .join("; ")
+      .slice(0, 1000);
+  }
+
+  const code = err?.code ? `${String(err.code).slice(0, 80)}: ` : "";
+  return `${code}${String(err?.message || err || "Shopify orderCancel failed").slice(0, 900)}`.slice(0, 1000);
+}
+
+function logFraudOrderCancelEvent(event, details = {}) {
+  if (isProductionRuntime()) return;
+  console.log(JSON.stringify({
+    event,
+    layer: "fraud_protection",
+    shop: details.shop,
+    shopifyOrderId: details.shopifyOrderId,
+    orderName: details.orderName,
+    reason: details.reason,
+    cancellationStatus: details.cancellationStatus,
+    jobId: details.jobId,
+    jobDone: details.jobDone,
+    error: details.error,
   }));
 }
 

@@ -22,6 +22,7 @@ import { recordMonitoringEvent } from "../services/monitoring/monitoring-service
 import {
   assessOrderFraudRisk,
   getFraudProtectionConfig,
+  handleFraudOrderCancellation,
 } from "../services/fraud-protection.server.js";
 
 const JOB_TIMEOUT_MS = 45000;
@@ -197,8 +198,22 @@ async function processCreateOrderJob(job) {
     accessToken: session.accessToken,
     shopifyOrderId: order.id || job.shopifyOrderId,
   });
+  const shouldBlockForFraud = selected.providerName === "zinc" && shouldBlockZincForFraud(fraudAssessment);
 
-  if (selected.providerName === "zinc" && shouldBlockZincForFraud(fraudAssessment)) {
+  try {
+    await handleFraudOrderCancellation({
+      shop: providerJob.shop,
+      accessToken: session.accessToken,
+      fraudAssessment,
+      shouldBlockZinc: shouldBlockForFraud,
+    });
+  } catch (err) {
+    logWorkerEvent("fraud_order_cancel_non_blocking_failure", providerJob, {
+      error: err?.message || String(err),
+    });
+  }
+
+  if (shouldBlockForFraud) {
     await markProviderFraudBlocked(providerOrder.id);
     logWorkerEvent("fraud_zinc_submit_blocked", providerJob, {
       riskLevel: fraudAssessment.result.riskLevel,
