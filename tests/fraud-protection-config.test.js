@@ -7,6 +7,7 @@ import {
   canUseFraudOrderCancelForShop,
   createFraudTestAssessment,
   assessOrderFraudRisk,
+  fetchShopifyOrderRisk,
   fetchShopifyCancelJobStatus,
   fetchShopifyOrderCancellationStatus,
   getFraudHighRiskOverrideForOrder,
@@ -741,7 +742,7 @@ test("getFraudOrderCancelEligibility blocks historical test orders", () => {
     process.env.SHOP_CUSTOM_DOMAIN = "";
     process.env.FRAUD_ORDER_CANCEL_ENABLED = "true";
 
-    for (const orderName of ["#1005", "#1006", "#1007", "#1008", "#1009", "#1010", "#1011", "#1012", "#1013", "#1014", "#1015", "#1016"]) {
+    for (const orderName of ["#1005", "#1006", "#1007", "#1008", "#1009", "#1010", "#1011", "#1012", "#1013", "#1014", "#1015", "#1016", "#1017", "#1018", "#1019"]) {
       assert.deepEqual(getFraudOrderCancelEligibility({
         shop: "pickvora-dev.myshopify.com",
         order: makeOrder({ name: orderName, address2: "" }),
@@ -774,36 +775,175 @@ test("canUseFraudOrderRestockForShop requires cancel guard and restock env flag"
   }
 });
 
+test("fetchShopifyOrderRisk queries only the minimal line item variant id for restock checks", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+
+  try {
+    globalThis.fetch = async (...args) => {
+      calls.push(args);
+      return {
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          data: {
+            order: {
+              id: "gid://shopify/Order/900001020",
+              name: "#1020",
+              lineItems: {
+                nodes: [
+                  { variant: { id: "gid://shopify/ProductVariant/50836887994615" } },
+                ],
+              },
+            },
+          },
+        }),
+      };
+    };
+
+    const order = await fetchShopifyOrderRisk(
+      "pickvora-dev.myshopify.com",
+      "offline_token",
+      "gid://shopify/Order/900001020"
+    );
+
+    const body = JSON.parse(calls[0][1].body);
+    assert.match(body.query, /lineItems\(first: 100\)/);
+    assert.match(body.query, /variant\s*\{\s*id\s*\}/);
+    assert.doesNotMatch(body.query, /lineItems\(first: 100\)[\s\S]*\bsku\b/);
+    assert.doesNotMatch(body.query, /lineItems\(first: 100\)[\s\S]*\bquantity\b/);
+    assert.equal(order.lineItems.nodes[0].variant.id, "gid://shopify/ProductVariant/50836887994615");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("assessOrderFraudRisk lineItems result enables restock cancellation path", async () => {
+  const original = setDevCancelEnv({ FRAUD_ORDER_RESTOCK_ENABLED: "true" });
+  const assessmentWrites = [];
+  const cancellationWrites = [];
+  const cancelCalls = [];
+
+  try {
+    const assessed = await assessOrderFraudRisk({
+      shop: "pickvora-dev.myshopify.com",
+      accessToken: "offline_token",
+      shopifyOrderId: "gid://shopify/Order/900001020",
+    }, {
+      getFraudProtectionConfig: async () => ({
+        enabled: true,
+        dryRun: true,
+        autoCancelHighRisk: true,
+        autoCancelMediumRisk: false,
+        blockZincOnHighRisk: true,
+        restockInventory: true,
+      }),
+      fetchShopifyOrderRisk: async () => ({
+        id: "gid://shopify/Order/900001020",
+        name: "#1020",
+        shippingAddress: {
+          address2: "PICKVORA_FRAUD_HIGH_TEST",
+        },
+        lineItems: {
+          nodes: [
+            {
+              variant: {
+                id: "gid://shopify/ProductVariant/50836887994615",
+              },
+            },
+          ],
+        },
+        totalPriceSet: {
+          shopMoney: {
+            amount: "10.00",
+            currencyCode: "USD",
+          },
+        },
+        displayFinancialStatus: "PAID",
+        displayFulfillmentStatus: "UNFULFILLED",
+        risk: {
+          assessments: [{ riskLevel: "NONE" }],
+          recommendation: "ALLOW",
+        },
+      }),
+      prismaClient: {
+        fraudOrderAssessment: {
+          upsert: async (args) => {
+            assessmentWrites.push(args);
+            return {
+              id: "fraud-assessment-1",
+              ...args.create,
+            };
+          },
+        },
+      },
+      logFraudHighRiskOverrideDebug: () => {},
+    });
+
+    const result = await handleFraudOrderCancellation({
+      shop: "pickvora-dev.myshopify.com",
+      accessToken: "offline_token",
+      fraudAssessment: { skipped: false, result: assessed },
+      shouldBlockZinc: true,
+    }, {
+      prismaClient: makeCancellationPrismaClient(cancellationWrites),
+      cancelShopifyFraudOrder: async (args) => {
+        cancelCalls.push(args);
+        return { job: { id: "gid://shopify/Job/1", done: true } };
+      },
+      enqueueFraudCancelPollJob: async () => {
+        throw new Error("poll should not be enqueued for done job");
+      },
+      logEvent: () => {},
+    });
+
+    assert.equal(assessed.order.lineItems.nodes[0].variant.id, "gid://shopify/ProductVariant/50836887994615");
+    assert.equal(assessmentWrites[0].create.riskLevel, "HIGH");
+    assert.equal(result.status, "CANCELLED");
+    assert.equal(cancelCalls.length, 1);
+    assert.equal(cancelCalls[0].restock, true);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
 test("getFraudOrderRestockOption only enables restock for the dev restock test variant", () => {
   const original = setDevCancelEnv({ FRAUD_ORDER_RESTOCK_ENABLED: "true" });
 
   try {
     assert.equal(getFraudOrderRestockOption({
       shop: "pickvora-dev.myshopify.com",
-      order: makeOrder({ name: "#1017", address2: "", restockVariant: true }),
-      fraudAssessment: makeFraudAssessment({ orderName: "#1017", restockInventory: true, restockVariant: true }),
+      order: makeOrder({ name: "#1020", address2: "", restockVariant: true }),
+      fraudAssessment: makeFraudAssessment({ orderName: "#1020", restockInventory: true, restockVariant: true }),
       shouldBlockZinc: true,
     }), true);
 
     assert.equal(getFraudOrderRestockOption({
       shop: "pickvora-dev.myshopify.com",
-      order: makeOrder({ name: "#1017", address2: "", restockVariant: true }),
-      fraudAssessment: makeFraudAssessment({ orderName: "#1017", restockInventory: false, restockVariant: true }),
+      order: makeOrder({ name: "#1020", address2: "", restockVariant: true }),
+      fraudAssessment: makeFraudAssessment({ orderName: "#1020", restockInventory: false, restockVariant: true }),
       shouldBlockZinc: true,
     }), false);
 
     assert.equal(getFraudOrderRestockOption({
       shop: "pickvora-dev.myshopify.com",
-      order: makeOrder({ name: "#1017", address2: "", restockVariant: false }),
-      fraudAssessment: makeFraudAssessment({ orderName: "#1017", restockInventory: true, restockVariant: false }),
+      order: makeOrder({ name: "#1020", address2: "", restockVariant: false }),
+      fraudAssessment: makeFraudAssessment({ orderName: "#1020", restockInventory: true, restockVariant: false }),
+      shouldBlockZinc: true,
+    }), false);
+
+    assert.equal(getFraudOrderRestockOption({
+      shop: "pickvora-dev.myshopify.com",
+      order: { id: "gid://shopify/Order/900001020", name: "#1020" },
+      fraudAssessment: makeFraudAssessment({ orderName: "#1020", restockInventory: true, restockVariant: false }),
       shouldBlockZinc: true,
     }), false);
 
     for (const riskLevel of ["LOW", "MEDIUM", "NONE", "UNKNOWN"]) {
       assert.equal(getFraudOrderRestockOption({
         shop: "pickvora-dev.myshopify.com",
-        order: makeOrder({ name: "#1017", address2: "", restockVariant: true }),
-        fraudAssessment: makeFraudAssessment({ orderName: "#1017", riskLevel, restockInventory: true, restockVariant: true }),
+        order: makeOrder({ name: "#1020", address2: "", restockVariant: true }),
+        fraudAssessment: makeFraudAssessment({ orderName: "#1020", riskLevel, restockInventory: true, restockVariant: true }),
         shouldBlockZinc: true,
       }), false);
     }
@@ -812,6 +952,20 @@ test("getFraudOrderRestockOption only enables restock for the dev restock test v
       shop: "pickvora-dev.myshopify.com",
       order: makeOrder({ name: "#1016", address2: "", restockVariant: true }),
       fraudAssessment: makeFraudAssessment({ orderName: "#1016", restockInventory: true, restockVariant: true }),
+      shouldBlockZinc: true,
+    }), false);
+
+    assert.equal(getFraudOrderRestockOption({
+      shop: "pickvora-dev.myshopify.com",
+      order: makeOrder({ name: "#1018", address2: "", restockVariant: true }),
+      fraudAssessment: makeFraudAssessment({ orderName: "#1018", restockInventory: true, restockVariant: true }),
+      shouldBlockZinc: true,
+    }), false);
+
+    assert.equal(getFraudOrderRestockOption({
+      shop: "pickvora-dev.myshopify.com",
+      order: makeOrder({ name: "#1019", address2: "", restockVariant: true }),
+      fraudAssessment: makeFraudAssessment({ orderName: "#1019", restockInventory: true, restockVariant: true }),
       shouldBlockZinc: true,
     }), false);
   } finally {
@@ -880,7 +1034,7 @@ test("handleFraudOrderCancellation calls orderCancel only for HIGH blockable dev
     const result = await handleFraudOrderCancellation({
       shop: "pickvora-dev.myshopify.com",
       accessToken: "offline_token",
-      fraudAssessment: makeFraudAssessment({ orderName: "#1017" }),
+      fraudAssessment: makeFraudAssessment({ orderName: "#1020" }),
       shouldBlockZinc: true,
     }, {
       prismaClient: makeCancellationPrismaClient(calls),
@@ -917,7 +1071,7 @@ test("handleFraudOrderCancellation passes restock true only for eligible dev res
 
   try {
     const fraudAssessment = makeFraudAssessment({
-      orderName: "#1017",
+      orderName: "#1020",
       restockInventory: true,
       restockVariant: true,
     });
@@ -948,6 +1102,95 @@ test("handleFraudOrderCancellation passes restock true only for eligible dev res
   }
 });
 
+test("handleFraudOrderCancellation logs safe restock true cancellation details", async () => {
+  const original = setDevCancelEnv({ FRAUD_ORDER_RESTOCK_ENABLED: "true" });
+  const calls = [];
+  const logs = [];
+
+  try {
+    const result = await handleFraudOrderCancellation({
+      shop: "pickvora-dev.myshopify.com",
+      accessToken: "offline_token",
+      fraudAssessment: makeFraudAssessment({
+        orderName: "#1020",
+        restockInventory: true,
+        restockVariant: true,
+      }),
+      shouldBlockZinc: true,
+    }, {
+      prismaClient: makeCancellationPrismaClient(calls),
+      cancelShopifyFraudOrder: async () => ({
+        job: { id: "gid://shopify/Job/1", done: true },
+      }),
+      enqueueFraudCancelPollJob: async () => {
+        throw new Error("poll should not be enqueued for done job");
+      },
+      logEvent: (event, details) => logs.push({ event, details }),
+    });
+
+    const options = logs.find((item) => item.event === "fraud_order_cancel_options_resolved");
+    const request = logs.find((item) => item.event === "fraud_order_cancel_request_prepared");
+    const response = logs.find((item) => item.event === "fraud_order_cancel_response_received");
+    const requested = logs.find((item) => item.event === "fraud_order_cancel_requested");
+
+    assert.equal(result.status, "CANCELLED");
+    assert.equal(options.details.shouldRestock, true);
+    assert.equal(options.details.riskLevel, "HIGH");
+    assert.equal(options.details.shouldBlockZinc, true);
+    assert.equal(request.details.shouldRestock, true);
+    assert.equal(request.details.notifyCustomer, false);
+    assert.equal(request.details.refundPaymentUsed, false);
+    assert.equal(request.details.refundMethodUsed, false);
+    assert.equal(response.details.orderCancelJobId, "gid://shopify/Job/1");
+    assert.equal(response.details.orderCancelJobDone, true);
+    assert.equal(requested.details.shouldRestock, true);
+    assert.equal(requested.details.cancellationStatus, "CANCELLED");
+    assert.equal(requested.details.orderCancelJobDone, true);
+    assert.equal(requested.details.hasCancellationError, false);
+    assertNoSensitiveLogKeys(logs);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("handleFraudOrderCancellation logs safe restock false cancellation details", async () => {
+  const original = setDevCancelEnv({ FRAUD_ORDER_RESTOCK_ENABLED: "true" });
+  const calls = [];
+  const logs = [];
+
+  try {
+    await handleFraudOrderCancellation({
+      shop: "pickvora-dev.myshopify.com",
+      accessToken: "offline_token",
+      fraudAssessment: makeFraudAssessment({
+        orderName: "#1020",
+        restockInventory: true,
+        restockVariant: false,
+      }),
+      shouldBlockZinc: true,
+    }, {
+      prismaClient: makeCancellationPrismaClient(calls),
+      cancelShopifyFraudOrder: async () => ({
+        job: { id: "gid://shopify/Job/1", done: false },
+      }),
+      enqueueFraudCancelPollJob: async () => {},
+      logEvent: (event, details) => logs.push({ event, details }),
+    });
+
+    const options = logs.find((item) => item.event === "fraud_order_cancel_options_resolved");
+    const request = logs.find((item) => item.event === "fraud_order_cancel_request_prepared");
+
+    assert.equal(options.details.shouldRestock, false);
+    assert.equal(request.details.shouldRestock, false);
+    assert.equal(request.details.notifyCustomer, false);
+    assert.equal(request.details.refundPaymentUsed, false);
+    assert.equal(request.details.refundMethodUsed, false);
+    assertNoSensitiveLogKeys(logs);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
 test("handleFraudOrderCancellation records userErrors and does not change Zinc block eligibility", async () => {
   const original = {
     NODE_ENV: process.env.NODE_ENV,
@@ -956,7 +1199,7 @@ test("handleFraudOrderCancellation records userErrors and does not change Zinc b
     FRAUD_ORDER_CANCEL_ENABLED: process.env.FRAUD_ORDER_CANCEL_ENABLED,
   };
   const calls = [];
-  const fraudAssessment = makeFraudAssessment({ orderName: "#1017" });
+  const fraudAssessment = makeFraudAssessment({ orderName: "#1020" });
 
   try {
     process.env.NODE_ENV = "development";
@@ -993,6 +1236,63 @@ test("handleFraudOrderCancellation records userErrors and does not change Zinc b
     process.env.SHOPIFY_APP_ENV = original.SHOPIFY_APP_ENV;
     process.env.SHOP_CUSTOM_DOMAIN = original.SHOP_CUSTOM_DOMAIN;
     process.env.FRAUD_ORDER_CANCEL_ENABLED = original.FRAUD_ORDER_CANCEL_ENABLED;
+  }
+});
+
+test("handleFraudOrderCancellation logs only safe orderCancel user error summaries", async () => {
+  const original = setDevCancelEnv({ FRAUD_ORDER_RESTOCK_ENABLED: "true" });
+  const calls = [];
+  const logs = [];
+
+  try {
+    const result = await handleFraudOrderCancellation({
+      shop: "pickvora-dev.myshopify.com",
+      accessToken: "offline_token",
+      fraudAssessment: makeFraudAssessment({
+        orderName: "#1020",
+        restockInventory: true,
+        restockVariant: true,
+      }),
+      shouldBlockZinc: true,
+    }, {
+      prismaClient: makeCancellationPrismaClient(calls),
+      cancelShopifyFraudOrder: async () => {
+        const error = new Error("Shopify orderCancel returned user errors.");
+        error.userErrors = [{
+          code: "ORDER_ALREADY_CANCELLED",
+          message: "Order is already cancelled.".repeat(20),
+          accessToken: "must-not-log",
+          customer: { email: "must-not-log@example.com" },
+        }];
+        error.safeOrderCancelSummary = {
+          shouldRestock: true,
+          notifyCustomer: false,
+          orderCancelJobId: "gid://shopify/Job/1",
+          orderCancelJobDone: false,
+          orderCancelUserErrors: error.userErrors,
+        };
+        throw error;
+      },
+      enqueueFraudCancelPollJob: async () => {
+        throw new Error("poll should not be enqueued after failed cancellation");
+      },
+      logEvent: (event, details) => logs.push({ event, details }),
+    });
+
+    const response = logs.find((item) => item.event === "fraud_order_cancel_response_received");
+    const failed = logs.find((item) => item.event === "fraud_order_cancel_failed");
+
+    assert.equal(result.status, "FAILED");
+    assert.equal(response.details.shouldRestock, true);
+    assert.equal(response.details.notifyCustomer, false);
+    assert.equal(response.details.orderCancelJobId, "gid://shopify/Job/1");
+    assert.equal(response.details.hasOrderCancelUserErrors, true);
+    assert.equal(response.details.orderCancelUserErrors[0].code, "ORDER_ALREADY_CANCELLED");
+    assert.ok(response.details.orderCancelUserErrors[0].message.length <= 240);
+    assert.equal(failed.details.hasCancellationError, true);
+    assertNoSensitiveLogKeys(logs);
+  } finally {
+    restoreEnv(original);
   }
 });
 
@@ -1459,6 +1759,38 @@ function makeFraudCancelPollJob(overrides = {}) {
   };
 }
 
+function assertNoSensitiveLogKeys(value) {
+  const blockedKeys = new Set([
+    "accessToken",
+    "token",
+    "apiKey",
+    "secret",
+    "customer",
+    "email",
+    "phone",
+    "shippingAddress",
+    "billingAddress",
+    "address",
+    "requestPayload",
+    "variables",
+    "response",
+    "raw",
+    "payment",
+    "cartToken",
+    "browserIp",
+  ]);
+
+  const visit = (item) => {
+    if (!item || typeof item !== "object") return;
+    for (const [key, nested] of Object.entries(item)) {
+      assert.equal(blockedKeys.has(key), false, `sensitive key logged: ${key}`);
+      visit(nested);
+    }
+  };
+
+  visit(value);
+}
+
 function makeFraudCancelPollPrismaClient(calls, overrides = {}) {
   return {
     fraudOrderAssessment: {
@@ -1466,7 +1798,7 @@ function makeFraudCancelPollPrismaClient(calls, overrides = {}) {
         id: "fraud-assessment-1",
         shop: "pickvora-dev.myshopify.com",
         shopifyOrderId: "gid://shopify/Order/900001017",
-        orderName: overrides.orderName || "#1017",
+        orderName: overrides.orderName || "#1020",
         riskLevel: "HIGH",
         decision: "WOULD_CANCEL",
         actionMode: "DRY_RUN",

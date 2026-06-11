@@ -3,6 +3,7 @@ import { enqueueFraudCancelPollJob } from "../queues/order-queue.server.js";
 import { withApiRetry } from "../utils/api-retry.server.js";
 import { canUseFraudTestSimulationForShop, isProductionRuntime } from "../utils/runtime-flags.server.js";
 import { trackApiCall } from "./monitoring/api-metrics.server.js";
+import { recordMonitoringEvent } from "./monitoring/monitoring-service.server.js";
 
 const API_VERSION = "2025-10";
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -10,6 +11,7 @@ const FRAUD_HIGH_RISK_OVERRIDE_MARKER = "PICKVORA_FRAUD_HIGH_TEST";
 const DEV_FRAUD_ORDER_CANCEL_SHOP = "pickvora-dev.myshopify.com";
 const FRAUD_ORDER_CANCEL_STAFF_NOTE = "Pickvora dev fraud protection test cancellation";
 const DEV_RESTOCK_TEST_VARIANT_ID = "gid://shopify/ProductVariant/50836887994615";
+const SAFE_ORDER_CANCEL_MESSAGE_MAX_LENGTH = 240;
 const FRAUD_HIGH_RISK_OVERRIDE_EXCLUDED_ORDERS = new Set([
   "#1005",
   "1005",
@@ -59,6 +61,18 @@ const FRAUD_ORDER_CANCEL_BLOCKED_ORDER_REFS = new Set([
   "#1016",
   "1016",
   "gid://shopify/Order/1016",
+  "#1017",
+  "1017",
+  "gid://shopify/Order/1017",
+  "gid://shopify/Order/7706684489975",
+  "#1018",
+  "1018",
+  "gid://shopify/Order/1018",
+  "gid://shopify/Order/7722671603959",
+  "#1019",
+  "1019",
+  "gid://shopify/Order/1019",
+  "gid://shopify/Order/7722866049271",
 ]);
 
 export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
@@ -302,6 +316,13 @@ export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
             currencyCode
           }
         }
+        lineItems(first: 100) {
+          nodes {
+            variant {
+              id
+            }
+          }
+        }
         risk {
           assessments {
             riskLevel
@@ -377,6 +398,13 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
     error.userErrors = res.errors.map((item) => ({
       message: item?.message || "Shopify GraphQL error",
     }));
+    error.safeOrderCancelSummary = buildSafeOrderCancelResponseLogDetails({
+      shop,
+      shopifyOrderId,
+      shouldRestock,
+      notifyCustomer: false,
+      graphQLErrors: res.errors,
+    });
     throw error;
   }
 
@@ -389,11 +417,29 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
     const error = new Error("Shopify orderCancel returned user errors.");
     error.code = "ORDER_CANCEL_USER_ERRORS";
     error.userErrors = userErrors;
+    error.safeOrderCancelSummary = buildSafeOrderCancelResponseLogDetails({
+      shop,
+      shopifyOrderId,
+      shouldRestock,
+      notifyCustomer: false,
+      job: payload.job || null,
+      userErrors: payload.userErrors || [],
+      orderCancelUserErrors: payload.orderCancelUserErrors || [],
+    });
     throw error;
   }
 
   return {
     job: payload.job || null,
+    safeLog: buildSafeOrderCancelResponseLogDetails({
+      shop,
+      shopifyOrderId,
+      shouldRestock,
+      notifyCustomer: false,
+      job: payload.job || null,
+      userErrors: payload.userErrors || [],
+      orderCancelUserErrors: payload.orderCancelUserErrors || [],
+    }),
     responsePayload: {
       job: payload.job
         ? {
@@ -609,19 +655,45 @@ export async function handleFraudOrderCancellation({
     return { status: "SKIPPED", reason: eligibility.reason };
   }
 
+  const restock = getFraudOrderRestockOption({
+    shop,
+    order,
+    fraudAssessment,
+    shouldBlockZinc,
+  });
+  const baseLogDetails = {
+    shop,
+    shopifyOrderId: assessment.shopifyOrderId,
+    orderName: assessment.orderName || order?.name || null,
+    riskLevel: result?.riskLevel || null,
+    shouldBlockZinc,
+    shouldRestock: restock,
+    notifyCustomer: false,
+    refundPaymentUsed: false,
+    refundMethodUsed: false,
+  };
+  logEvent("fraud_order_cancel_options_resolved", buildSafeFraudOrderCancelLogDetails(baseLogDetails));
+
   try {
-    const restock = getFraudOrderRestockOption({
-      shop,
-      order,
-      fraudAssessment,
-      shouldBlockZinc,
-    });
+    logEvent("fraud_order_cancel_request_prepared", buildSafeFraudOrderCancelLogDetails(baseLogDetails));
     const cancellation = await cancelOrder({
       shop,
       accessToken,
       shopifyOrderId: assessment.shopifyOrderId,
       restock,
     });
+    logEvent("fraud_order_cancel_response_received", buildSafeFraudOrderCancelLogDetails({
+      ...baseLogDetails,
+      ...buildSafeOrderCancelResponseLogDetails({
+        ...cancellation.safeLog,
+        shop,
+        orderName: assessment.orderName || order?.name || null,
+        shopifyOrderId: assessment.shopifyOrderId,
+        shouldRestock: restock,
+        notifyCustomer: false,
+        job: cancellation.job || null,
+      }),
+    }));
     const cancellationStatus = cancellation.job?.done ? "CANCELLED" : "REQUESTED";
     await updateFraudCancellationStatus({
       prismaClient,
@@ -639,21 +711,37 @@ export async function handleFraudOrderCancellation({
         requestedAt: new Date().toISOString(),
       });
     }
-    logEvent("fraud_order_cancel_requested", {
+    logEvent("fraud_order_cancel_requested", buildSafeFraudOrderCancelLogDetails({
       shop,
       shopifyOrderId: assessment.shopifyOrderId,
       orderName: assessment.orderName || order?.name || null,
       cancellationStatus,
       jobId: cancellation.job?.id || null,
       jobDone: Boolean(cancellation.job?.done),
+      shouldRestock: restock,
       restock,
-    });
+      orderCancelJobDone: Boolean(cancellation.job?.done),
+      hasCancellationError: false,
+    }));
     return {
       status: cancellationStatus,
       job: cancellation.job || null,
     };
   } catch (err) {
     const cancellationError = summarizeOrderCancelError(err);
+    const responseLog = err?.safeOrderCancelSummary || buildSafeOrderCancelResponseLogDetails({
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      shouldRestock: restock,
+      notifyCustomer: false,
+      userErrors: err?.userErrors || [],
+    });
+    logEvent("fraud_order_cancel_response_received", buildSafeFraudOrderCancelLogDetails({
+      ...responseLog,
+      shop,
+      shopifyOrderId: assessment.shopifyOrderId,
+      orderName: assessment.orderName || order?.name || null,
+    }));
     await updateFraudCancellationStatus({
       prismaClient,
       shop,
@@ -661,12 +749,13 @@ export async function handleFraudOrderCancellation({
       cancellationStatus: "FAILED",
       cancellationError,
     });
-    logEvent("fraud_order_cancel_failed", {
+    logEvent("fraud_order_cancel_failed", buildSafeFraudOrderCancelLogDetails({
       shop,
       shopifyOrderId: assessment.shopifyOrderId,
       orderName: assessment.orderName || order?.name || null,
       error: cancellationError,
-    });
+      hasCancellationError: true,
+    }));
     return { status: "FAILED", error: cancellationError };
   }
 }
@@ -1061,21 +1150,86 @@ function summarizeOrderCancelError(err) {
   return `${code}${String(err?.message || err || "Shopify orderCancel failed").slice(0, 900)}`.slice(0, 1000);
 }
 
+function buildSafeOrderCancelResponseLogDetails({
+  shop,
+  orderName,
+  shopifyOrderId,
+  shouldRestock,
+  notifyCustomer,
+  job,
+  orderCancelJobId,
+  orderCancelJobDone,
+  userErrors,
+  orderCancelUserErrors,
+  graphQLErrors,
+}) {
+  const safeUserErrors = sanitizeOrderCancelUserErrors(userErrors || graphQLErrors);
+  const safeOrderCancelUserErrors = sanitizeOrderCancelUserErrors(orderCancelUserErrors);
+  return buildSafeFraudOrderCancelLogDetails({
+    shop,
+    orderName,
+    shopifyOrderId,
+    shouldRestock,
+    notifyCustomer: Boolean(notifyCustomer),
+    orderCancelJobId: orderCancelJobId || job?.id || null,
+    orderCancelJobDone: Boolean(orderCancelJobDone ?? job?.done),
+    userErrors: safeUserErrors,
+    orderCancelUserErrors: safeOrderCancelUserErrors,
+    hasUserErrors: safeUserErrors.length > 0,
+    hasOrderCancelUserErrors: safeOrderCancelUserErrors.length > 0,
+  });
+}
+
+function sanitizeOrderCancelUserErrors(errors) {
+  if (!Array.isArray(errors)) return [];
+  return errors.slice(0, 5).map((item) => {
+    const safe = {};
+    if (item?.code) safe.code = String(item.code).slice(0, 80);
+    safe.message = String(item?.message || "Shopify orderCancel error")
+      .slice(0, SAFE_ORDER_CANCEL_MESSAGE_MAX_LENGTH);
+    return safe;
+  });
+}
+
+function buildSafeFraudOrderCancelLogDetails(details = {}) {
+  const userErrors = sanitizeOrderCancelUserErrors(details.userErrors);
+  const orderCancelUserErrors = sanitizeOrderCancelUserErrors(details.orderCancelUserErrors);
+  return {
+    shop: details.shop || null,
+    orderName: details.orderName || null,
+    shopifyOrderId: details.shopifyOrderId || null,
+    riskLevel: details.riskLevel || null,
+    shouldBlockZinc: Boolean(details.shouldBlockZinc),
+    shouldRestock: Boolean(details.shouldRestock),
+    notifyCustomer: Boolean(details.notifyCustomer),
+    refundPaymentUsed: false,
+    refundMethodUsed: false,
+    orderCancelJobId: details.orderCancelJobId || details.jobId || null,
+    orderCancelJobDone: Boolean(details.orderCancelJobDone ?? details.jobDone),
+    userErrors,
+    orderCancelUserErrors,
+    hasUserErrors: Boolean(details.hasUserErrors || userErrors.length),
+    hasOrderCancelUserErrors: Boolean(details.hasOrderCancelUserErrors || orderCancelUserErrors.length),
+    cancellationStatus: details.cancellationStatus || null,
+    hasCancellationError: Boolean(details.hasCancellationError),
+    reason: details.reason || null,
+    error: details.error ? String(details.error).slice(0, 1000) : null,
+  };
+}
+
 function logFraudOrderCancelEvent(event, details = {}) {
   if (isProductionRuntime()) return;
-  console.log(JSON.stringify({
+  const safeDetails = buildSafeFraudOrderCancelLogDetails(details);
+  const payload = {
     event,
     layer: "fraud_protection",
-    shop: details.shop,
-    shopifyOrderId: details.shopifyOrderId,
-    orderName: details.orderName,
-    reason: details.reason,
-    cancellationStatus: details.cancellationStatus,
-    jobId: details.jobId,
-    jobDone: details.jobDone,
-    restock: details.restock,
-    error: details.error,
-  }));
+    ...safeDetails,
+  };
+  console.log(JSON.stringify(payload));
+  recordMonitoringEvent(event, {
+    layer: "fraud_protection",
+    ...safeDetails,
+  }, { persist: true });
 }
 
 function getFraudDecision({ config, riskLevel }) {
