@@ -112,6 +112,17 @@ export const DEV_FRAUD_REFUND_E2E_CONFIG = Object.freeze({
   notifyCustomer: false,
 });
 
+export const DEV_FRAUD_REFUND_E2E_ROLLBACK_CONFIG = Object.freeze({
+  enabled: true,
+  dryRun: true,
+  autoCancelHighRisk: true,
+  autoCancelMediumRisk: false,
+  blockZincOnHighRisk: true,
+  restockInventory: true,
+  refundPayment: false,
+  notifyCustomer: false,
+});
+
 const RISK_PRIORITY = {
   HIGH: 5,
   MEDIUM: 4,
@@ -285,6 +296,35 @@ export function buildDevFraudRefundE2EConfigPlan({ shop }) {
   return {
     shop,
     ...buildDevFraudRefundE2EConfigData(),
+  };
+}
+
+export async function disableDevFraudRefundE2EConfig({
+  shop,
+  targetShop = process.env.TARGET_SHOP,
+  confirm = process.env.CONFIRM_DISABLE_DEV_REFUND_E2E,
+}, deps = {}) {
+  assertCanDisableDevFraudRefundE2EConfig({ shop, targetShop, confirm });
+
+  const prismaClient = deps.prismaClient || prisma;
+  const configData = buildDevFraudRefundE2ERollbackConfigData();
+  const config = await prismaClient.fraudProtectionConfig.upsert({
+    where: { shop },
+    create: {
+      shop,
+      ...configData,
+    },
+    update: configData,
+  });
+
+  return pickSafeFraudProtectionConfigFields(config);
+}
+
+export function buildDevFraudRefundE2ERollbackConfigPlan({ shop }) {
+  assertDevFraudRefundE2EShop(shop);
+  return {
+    shop,
+    ...buildDevFraudRefundE2ERollbackConfigData(),
   };
 }
 
@@ -1404,14 +1444,26 @@ function sanitizeFraudProtectionConfig({
 
 function assertCanEnableDevFraudRefundE2EConfig({ shop, targetShop, confirm }) {
   assertDevFraudRefundE2EShop(shop);
-  if (String(targetShop || "").trim().toLowerCase() !== DEV_FRAUD_ORDER_CANCEL_SHOP) {
-    throw new Error("TARGET_SHOP must be pickvora-dev.myshopify.com.");
-  }
+  assertDevFraudRefundE2ERuntime({ shop, targetShop });
   if (String(confirm || "") !== "true") {
     throw new Error("CONFIRM_DEV_REFUND_E2E must be true.");
   }
+}
+
+function assertCanDisableDevFraudRefundE2EConfig({ shop, targetShop, confirm }) {
+  assertDevFraudRefundE2EShop(shop);
+  assertDevFraudRefundE2ERuntime({ shop, targetShop });
+  if (String(confirm || "") !== "true") {
+    throw new Error("CONFIRM_DISABLE_DEV_REFUND_E2E must be true.");
+  }
+}
+
+function assertDevFraudRefundE2ERuntime({ shop, targetShop }) {
+  if (String(targetShop || "").trim().toLowerCase() !== DEV_FRAUD_ORDER_CANCEL_SHOP) {
+    throw new Error("TARGET_SHOP must be pickvora-dev.myshopify.com.");
+  }
   if (isProductionRuntime()) {
-    throw new Error("Refusing to enable dev refund E2E config in production runtime.");
+    throw new Error("Refusing to change dev refund E2E config in production runtime.");
   }
   if (String(process.env.FRAUD_ORDER_CANCEL_ENABLED || "") !== "true") {
     throw new Error("FRAUD_ORDER_CANCEL_ENABLED must be true.");
@@ -1437,6 +1489,10 @@ function assertDevFraudRefundE2EShop(shop) {
 
 function buildDevFraudRefundE2EConfigData() {
   return { ...DEV_FRAUD_REFUND_E2E_CONFIG };
+}
+
+function buildDevFraudRefundE2ERollbackConfigData() {
+  return { ...DEV_FRAUD_REFUND_E2E_ROLLBACK_CONFIG };
 }
 
 export function pickSafeFraudProtectionConfigFields(config) {
