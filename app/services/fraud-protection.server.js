@@ -9,6 +9,7 @@ const API_VERSION = "2025-10";
 const DEFAULT_TIMEOUT_MS = 30000;
 const FRAUD_HIGH_RISK_OVERRIDE_MARKER = "PICKVORA_FRAUD_HIGH_TEST";
 const DEV_FRAUD_ORDER_CANCEL_SHOP = "pickvora-dev.myshopify.com";
+const PRODUCTION_SHOP = "cmgpwd-ty.myshopify.com";
 const FRAUD_ORDER_CANCEL_STAFF_NOTE = "Pickvora dev fraud protection test cancellation";
 const DEV_RESTOCK_TEST_VARIANT_ID = "gid://shopify/ProductVariant/50836887994615";
 const SAFE_ORDER_CANCEL_MESSAGE_MAX_LENGTH = 240;
@@ -99,6 +100,17 @@ export const EMPTY_FRAUD_ANALYTICS = {
   cancelledCount: 0,
   recent: [],
 };
+
+export const DEV_FRAUD_REFUND_E2E_CONFIG = Object.freeze({
+  enabled: true,
+  dryRun: false,
+  autoCancelHighRisk: true,
+  autoCancelMediumRisk: false,
+  blockZincOnHighRisk: true,
+  restockInventory: true,
+  refundPayment: true,
+  notifyCustomer: false,
+});
 
 const RISK_PRIORITY = {
   HIGH: 5,
@@ -245,6 +257,35 @@ export async function updateFraudZincBlockConfig({
   }));
 
   return config;
+}
+
+export async function enableDevFraudRefundE2EConfig({
+  shop,
+  targetShop = process.env.TARGET_SHOP,
+  confirm = process.env.CONFIRM_DEV_REFUND_E2E,
+}, deps = {}) {
+  assertCanEnableDevFraudRefundE2EConfig({ shop, targetShop, confirm });
+
+  const prismaClient = deps.prismaClient || prisma;
+  const configData = buildDevFraudRefundE2EConfigData();
+  const config = await prismaClient.fraudProtectionConfig.upsert({
+    where: { shop },
+    create: {
+      shop,
+      ...configData,
+    },
+    update: configData,
+  });
+
+  return pickSafeFraudProtectionConfigFields(config);
+}
+
+export function buildDevFraudRefundE2EConfigPlan({ shop }) {
+  assertDevFraudRefundE2EShop(shop);
+  return {
+    shop,
+    ...buildDevFraudRefundE2EConfigData(),
+  };
 }
 
 export async function createFraudTestAssessment({ shop, createdBy }, deps = {}) {
@@ -1358,6 +1399,57 @@ function sanitizeFraudProtectionConfig({
     refundPayment: Boolean(enabled && refundPayment && canUseFraudOrderRefundForShop(shop)),
     notifyCustomer: false,
     delayMinutes: 2,
+  };
+}
+
+function assertCanEnableDevFraudRefundE2EConfig({ shop, targetShop, confirm }) {
+  assertDevFraudRefundE2EShop(shop);
+  if (String(targetShop || "").trim().toLowerCase() !== DEV_FRAUD_ORDER_CANCEL_SHOP) {
+    throw new Error("TARGET_SHOP must be pickvora-dev.myshopify.com.");
+  }
+  if (String(confirm || "") !== "true") {
+    throw new Error("CONFIRM_DEV_REFUND_E2E must be true.");
+  }
+  if (isProductionRuntime()) {
+    throw new Error("Refusing to enable dev refund E2E config in production runtime.");
+  }
+  if (String(process.env.FRAUD_ORDER_CANCEL_ENABLED || "") !== "true") {
+    throw new Error("FRAUD_ORDER_CANCEL_ENABLED must be true.");
+  }
+  if (String(process.env.FRAUD_ORDER_REFUND_ENABLED || "") !== "true") {
+    throw new Error("FRAUD_ORDER_REFUND_ENABLED must be true.");
+  }
+
+  const customDomain = String(process.env.SHOP_CUSTOM_DOMAIN || "").trim().toLowerCase();
+  if (customDomain === DEV_FRAUD_ORDER_CANCEL_SHOP || customDomain === PRODUCTION_SHOP) {
+    throw new Error("Refusing to enable dev refund E2E config when SHOP_CUSTOM_DOMAIN is protected.");
+  }
+  if (!canUseFraudOrderRefundForShop(shop)) {
+    throw new Error("Fraud order refund guard is not enabled for the target shop.");
+  }
+}
+
+function assertDevFraudRefundE2EShop(shop) {
+  if (String(shop || "").trim().toLowerCase() !== DEV_FRAUD_ORDER_CANCEL_SHOP) {
+    throw new Error("Dev refund E2E config can only target pickvora-dev.myshopify.com.");
+  }
+}
+
+function buildDevFraudRefundE2EConfigData() {
+  return { ...DEV_FRAUD_REFUND_E2E_CONFIG };
+}
+
+export function pickSafeFraudProtectionConfigFields(config) {
+  return {
+    shop: config?.shop || null,
+    enabled: Boolean(config?.enabled),
+    dryRun: Boolean(config?.dryRun),
+    autoCancelHighRisk: Boolean(config?.autoCancelHighRisk),
+    autoCancelMediumRisk: Boolean(config?.autoCancelMediumRisk),
+    blockZincOnHighRisk: Boolean(config?.blockZincOnHighRisk),
+    restockInventory: Boolean(config?.restockInventory),
+    refundPayment: Boolean(config?.refundPayment),
+    notifyCustomer: Boolean(config?.notifyCustomer),
   };
 }
 

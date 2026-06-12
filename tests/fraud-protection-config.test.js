@@ -6,6 +6,9 @@ import {
   cancelShopifyFraudOrder,
   canUseFraudOrderCancelForShop,
   createFraudTestAssessment,
+  DEV_FRAUD_REFUND_E2E_CONFIG,
+  buildDevFraudRefundE2EConfigPlan,
+  enableDevFraudRefundE2EConfig,
   assessOrderFraudRisk,
   fetchShopifyOrderRisk,
   fetchShopifyCancelJobStatus,
@@ -164,6 +167,162 @@ test("updateFraudProtectionConfig never stores live mode when dryRun is false", 
   assert.equal(config.dryRun, true);
   assert.equal(calls[0].create.dryRun, true);
   assert.equal(calls[0].update.dryRun, true);
+});
+
+test("buildDevFraudRefundE2EConfigPlan exposes only safe dev refund E2E fields", () => {
+  assert.deepEqual(buildDevFraudRefundE2EConfigPlan({
+    shop: "pickvora-dev.myshopify.com",
+  }), {
+    shop: "pickvora-dev.myshopify.com",
+    ...DEV_FRAUD_REFUND_E2E_CONFIG,
+  });
+  assert.equal(Object.hasOwn(DEV_FRAUD_REFUND_E2E_CONFIG, "notifyCustomer"), true);
+  assert.equal(DEV_FRAUD_REFUND_E2E_CONFIG.notifyCustomer, false);
+  assert.equal(Object.hasOwn(DEV_FRAUD_REFUND_E2E_CONFIG, "cancelReason"), false);
+  assert.equal(Object.hasOwn(DEV_FRAUD_REFUND_E2E_CONFIG, "delayMinutes"), false);
+});
+
+test("enableDevFraudRefundE2EConfig requires explicit confirmation", async () => {
+  const original = setDevCancelEnv({ FRAUD_ORDER_REFUND_ENABLED: "true" });
+
+  try {
+    await assert.rejects(
+      () => enableDevFraudRefundE2EConfig({
+        shop: "pickvora-dev.myshopify.com",
+        targetShop: "pickvora-dev.myshopify.com",
+        confirm: "",
+      }, {
+        prismaClient: makePrismaClient([]),
+      }),
+      /CONFIRM_DEV_REFUND_E2E/,
+    );
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("enableDevFraudRefundE2EConfig rejects production runtime, non-dev shop, and missing refund env", async () => {
+  let original = setDevCancelEnv({
+    NODE_ENV: "production",
+    FRAUD_ORDER_REFUND_ENABLED: "true",
+  });
+  try {
+    await assert.rejects(
+      () => enableDevFraudRefundE2EConfig({
+        shop: "pickvora-dev.myshopify.com",
+        targetShop: "pickvora-dev.myshopify.com",
+        confirm: "true",
+      }, {
+        prismaClient: makePrismaClient([]),
+      }),
+      /production runtime/,
+    );
+  } finally {
+    restoreEnv(original);
+  }
+
+  original = setDevCancelEnv({ FRAUD_ORDER_REFUND_ENABLED: "true" });
+  try {
+    await assert.rejects(
+      () => enableDevFraudRefundE2EConfig({
+        shop: "example.myshopify.com",
+        targetShop: "pickvora-dev.myshopify.com",
+        confirm: "true",
+      }, {
+        prismaClient: makePrismaClient([]),
+      }),
+      /only target pickvora-dev/,
+    );
+  } finally {
+    restoreEnv(original);
+  }
+
+  original = setDevCancelEnv({ FRAUD_ORDER_REFUND_ENABLED: "" });
+  try {
+    await assert.rejects(
+      () => enableDevFraudRefundE2EConfig({
+        shop: "pickvora-dev.myshopify.com",
+        targetShop: "pickvora-dev.myshopify.com",
+        confirm: "true",
+      }, {
+        prismaClient: makePrismaClient([]),
+      }),
+      /FRAUD_ORDER_REFUND_ENABLED/,
+    );
+  } finally {
+    restoreEnv(original);
+  }
+
+  original = setDevCancelEnv({ FRAUD_ORDER_REFUND_ENABLED: "true" });
+  try {
+    await assert.rejects(
+      () => enableDevFraudRefundE2EConfig({
+        shop: "pickvora-dev.myshopify.com",
+        targetShop: "example.myshopify.com",
+        confirm: "true",
+      }, {
+        prismaClient: makePrismaClient([]),
+      }),
+      /TARGET_SHOP/,
+    );
+  } finally {
+    restoreEnv(original);
+  }
+
+  original = setDevCancelEnv({
+    SHOP_CUSTOM_DOMAIN: "pickvora-dev.myshopify.com",
+    FRAUD_ORDER_REFUND_ENABLED: "true",
+  });
+  try {
+    await assert.rejects(
+      () => enableDevFraudRefundE2EConfig({
+        shop: "pickvora-dev.myshopify.com",
+        targetShop: "pickvora-dev.myshopify.com",
+        confirm: "true",
+      }, {
+        prismaClient: makePrismaClient([]),
+      }),
+      /SHOP_CUSTOM_DOMAIN/,
+    );
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test("enableDevFraudRefundE2EConfig stores only the dev refund E2E allowlist", async () => {
+  const original = setDevCancelEnv({ FRAUD_ORDER_REFUND_ENABLED: "true" });
+  const calls = [];
+
+  try {
+    const config = await enableDevFraudRefundE2EConfig({
+      shop: "pickvora-dev.myshopify.com",
+      targetShop: "pickvora-dev.myshopify.com",
+      confirm: "true",
+    }, {
+      prismaClient: makePrismaClient(calls),
+    });
+
+    assert.deepEqual(config, {
+      shop: "pickvora-dev.myshopify.com",
+      enabled: true,
+      dryRun: false,
+      autoCancelHighRisk: true,
+      autoCancelMediumRisk: false,
+      blockZincOnHighRisk: true,
+      restockInventory: true,
+      refundPayment: true,
+      notifyCustomer: false,
+    });
+    assert.deepEqual(calls[0].where, { shop: "pickvora-dev.myshopify.com" });
+    assert.deepEqual(calls[0].create, {
+      shop: "pickvora-dev.myshopify.com",
+      ...DEV_FRAUD_REFUND_E2E_CONFIG,
+    });
+    assert.deepEqual(calls[0].update, DEV_FRAUD_REFUND_E2E_CONFIG);
+    assertNoSensitiveLogKeys(calls);
+  } finally {
+    restoreEnv(original);
+  }
 });
 
 test("updateFraudProtectionConfig stores Zinc block disabled unless explicitly allowed", async () => {
