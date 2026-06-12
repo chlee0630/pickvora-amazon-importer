@@ -91,6 +91,8 @@ const emptyFraudConfig = {
   dryRun: true,
   autoCancelHighRisk: false,
   autoCancelMediumRisk: false,
+  blockZincOnHighRisk: false,
+  restockInventory: true,
 };
 
 export default function OperationsDashboardPage({
@@ -335,7 +337,9 @@ function formatMoney(amount, currencyCode) {
 function FraudProtectionSettings({ config, fetcher }) {
   const isSubmitting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "update_fraud_protection_config";
   const enabled = Boolean(config.enabled);
-  const highRiskAction = enabled && config.autoCancelHighRisk ? "Would cancel" : "Review only";
+  const highRiskAction = enabled && config.autoCancelHighRisk ? "Block Zinc + cancel" : "Review only";
+  const blockZincOnHighRisk = Boolean(config.blockZincOnHighRisk);
+  const restockInventory = Boolean(config.restockInventory);
 
   return (
     <s-box padding="base" borderWidth="base" borderRadius="base" background="default">
@@ -344,18 +348,20 @@ function FraudProtectionSettings({ config, fetcher }) {
         <SummaryGrid
           items={[
             { label: "Enabled", value: enabled ? "Enabled" : "Disabled", tone: enabled ? "critical" : undefined },
-            { label: "Mode", value: "Dry-run only" },
-            { label: "High-risk action", value: highRiskAction, tone: highRiskAction === "Would cancel" ? "critical" : undefined },
+            { label: "Mode", value: enabled ? "Active fraud protection" : "Disabled" },
+            { label: "High-risk action", value: highRiskAction, tone: highRiskAction === "Block Zinc + cancel" ? "critical" : undefined },
             { label: "Medium-risk action", value: "Review only" },
+            { label: "Zinc block on high risk", value: blockZincOnHighRisk ? "Enabled" : "Disabled", tone: blockZincOnHighRisk ? "critical" : undefined },
+            { label: "Restock on cancel", value: restockInventory ? "Enabled" : "Disabled" },
           ]}
         />
         <s-stack direction="inline" gap="base" style={{ flexWrap: "wrap" }}>
           <FraudConfigForm
             fetcher={fetcher}
             enabled
-            label="Enable dry-run fraud protection"
+            label="Enable fraud protection"
             disabled={isSubmitting || enabled}
-            confirmMessage="Enable dry-run fraud protection? This will only record fraud assessments and will not cancel orders."
+            confirmMessage="Enable fraud protection? HIGH-risk Zinc orders will be blocked before submit and cancelled in Shopify."
           />
           <FraudConfigForm
             fetcher={fetcher}

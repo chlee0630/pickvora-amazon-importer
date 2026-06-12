@@ -156,28 +156,61 @@ test("runFraudAssessmentForOrder treats fraud assessment failures as non-blockin
   assert.match(errors[0].join(" "), /fraud_assessment_failed_non_blocking/);
 });
 
-test("shouldBlockZincForFraud blocks only HIGH dry-run would-cancel Zinc candidates", () => {
+test("shouldBlockZincForFraud blocks only HIGH risk when explicit Zinc block flag is enabled", () => {
   const config = {
     enabled: true,
     dryRun: true,
     autoCancelHighRisk: true,
+    blockZincOnHighRisk: true,
   };
 
   assert.equal(shouldBlockZincForFraud({
     skipped: false,
-    result: { config, riskLevel: "HIGH", decision: "WOULD_CANCEL" },
+    result: {
+      config,
+      riskLevel: "HIGH",
+      decision: "WOULD_CANCEL",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
+    },
   }), true);
   assert.equal(shouldBlockZincForFraud({
     skipped: false,
-    result: { config, riskLevel: "MEDIUM", decision: "WOULD_CANCEL" },
+    result: {
+      config,
+      riskLevel: "MEDIUM",
+      decision: "WOULD_CANCEL",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
+    },
   }), false);
   assert.equal(shouldBlockZincForFraud({
     skipped: false,
-    result: { config, riskLevel: "HIGH", decision: "REVIEW" },
-  }), false);
+    result: {
+      config,
+      riskLevel: "HIGH",
+      decision: "REVIEW",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
+    },
+  }), true);
 });
 
-test("shouldBlockZincForFraud keeps existing flow unless dry-run high risk auto-cancel is enabled", () => {
+test("shouldBlockZincForFraud does not require a WOULD_CANCEL dry-run decision when explicit flag is enabled", () => {
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: {
+      config: {
+        enabled: true,
+        dryRun: true,
+        autoCancelHighRisk: false,
+        blockZincOnHighRisk: true,
+      },
+      riskLevel: "HIGH",
+      decision: "REVIEW",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
+    },
+  }), true);
+});
+
+test("shouldBlockZincForFraud keeps existing flow unless explicit Zinc block flag is enabled", () => {
   assert.equal(shouldBlockZincForFraud({ skipped: true, reason: "assessment_failed" }), false);
   assert.equal(shouldBlockZincForFraud({
     skipped: false,
@@ -185,22 +218,34 @@ test("shouldBlockZincForFraud keeps existing flow unless dry-run high risk auto-
       config: { enabled: false, dryRun: true, autoCancelHighRisk: true },
       riskLevel: "HIGH",
       decision: "WOULD_CANCEL",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), false);
   assert.equal(shouldBlockZincForFraud({
     skipped: false,
     result: {
-      config: { enabled: true, dryRun: false, autoCancelHighRisk: true },
+      config: { enabled: true, dryRun: false, autoCancelHighRisk: true, blockZincOnHighRisk: false },
       riskLevel: "HIGH",
       decision: "WOULD_CANCEL",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), false);
   assert.equal(shouldBlockZincForFraud({
     skipped: false,
     result: {
-      config: { enabled: true, dryRun: true, autoCancelHighRisk: false },
+      config: { enabled: true, dryRun: true, autoCancelHighRisk: false, blockZincOnHighRisk: false },
       riskLevel: "HIGH",
       decision: "WOULD_CANCEL",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
+    },
+  }), false);
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: {
+      config: { enabled: true, dryRun: true, autoCancelHighRisk: true, blockZincOnHighRisk: false },
+      riskLevel: "HIGH",
+      decision: "WOULD_CANCEL",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), false);
 });

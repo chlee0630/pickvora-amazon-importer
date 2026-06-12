@@ -42,13 +42,15 @@ export const action = async ({ request }) => {
         dryRun: true,
         autoCancelHighRisk: enabled,
         autoCancelMediumRisk: false,
+        blockZincOnHighRisk: enabled,
+        restockInventory: enabled,
         updatedBy: session.email || session.userId?.toString() || session.shop,
       });
 
       return {
         success: true,
         message: enabled
-          ? "Dry-run fraud protection enabled. Orders will not be cancelled."
+          ? "Fraud protection enabled. HIGH-risk Zinc orders will be blocked before submit and cancelled in Shopify."
           : "Fraud protection disabled.",
         config,
       };

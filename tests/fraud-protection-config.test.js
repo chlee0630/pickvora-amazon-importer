@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  cancelShopifyFraudOrder,
   createFraudTestAssessment,
+  fetchShopifyOrderRisk,
+  getFraudOrderRestockOption,
+  handleFraudOrderCancellation,
   updateFraudProtectionConfig,
 } from "../app/services/fraud-protection.server.js";
 import { canUseFraudTestSimulationForShop } from "../app/utils/runtime-flags.server.js";
@@ -26,7 +30,8 @@ test("updateFraudProtectionConfig stores safe dry-run enable settings", async ()
   assert.equal(config.dryRun, true);
   assert.equal(config.autoCancelHighRisk, true);
   assert.equal(config.autoCancelMediumRisk, false);
-  assert.equal(config.restockInventory, false);
+  assert.equal(config.blockZincOnHighRisk, false);
+  assert.equal(config.restockInventory, true);
   assert.equal(config.refundPayment, false);
   assert.equal(config.notifyCustomer, false);
   assert.deepEqual(calls[0].where, { shop: SHOP });
@@ -48,6 +53,8 @@ test("updateFraudProtectionConfig stores safe disabled settings", async () => {
   assert.equal(config.dryRun, true);
   assert.equal(config.autoCancelHighRisk, false);
   assert.equal(config.autoCancelMediumRisk, false);
+  assert.equal(config.blockZincOnHighRisk, false);
+  assert.equal(config.restockInventory, false);
 });
 
 test("updateFraudProtectionConfig never stores live mode when dryRun is false", async () => {
@@ -66,6 +73,155 @@ test("updateFraudProtectionConfig never stores live mode when dryRun is false", 
   assert.equal(config.dryRun, true);
   assert.equal(calls[0].create.dryRun, true);
   assert.equal(calls[0].update.dryRun, true);
+});
+
+test("fetchShopifyOrderRisk queries only the minimal line item variant id for restock checks", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+
+  try {
+    globalThis.fetch = async (...args) => {
+      calls.push(args);
+      return {
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({
+          data: {
+            order: {
+              id: "gid://shopify/Order/123",
+              name: "#123",
+              lineItems: {
+                nodes: [
+                  { variant: { id: "gid://shopify/ProductVariant/456" } },
+                ],
+              },
+            },
+          },
+        }),
+      };
+    };
+
+    const order = await fetchShopifyOrderRisk(SHOP, "offline_token", "gid://shopify/Order/123");
+    const body = JSON.parse(calls[0][1].body);
+
+    assert.match(body.query, /lineItems\(first: 100\)/);
+    assert.match(body.query, /variant\s*\{\s*id\s*\}/);
+    assert.doesNotMatch(body.query, /lineItems\(first: 100\)[\s\S]*\bsku\b/);
+    assert.doesNotMatch(body.query, /lineItems\(first: 100\)[\s\S]*\bquantity\b/);
+    assert.equal(order.lineItems.nodes[0].variant.id, "gid://shopify/ProductVariant/456");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("cancelShopifyFraudOrder sends orderCancel with restock and no refund method", async () => {
+  const calls = [];
+  const result = await cancelShopifyFraudOrder({
+    shop: SHOP,
+    accessToken: "offline_token",
+    shopifyOrderId: "gid://shopify/Order/123",
+    restock: true,
+  }, {
+    adminFetch: async (...args) => {
+      calls.push(args);
+      return {
+        data: {
+          orderCancel: {
+            job: { id: "gid://shopify/Job/abc-123", done: false },
+            orderCancelUserErrors: [],
+            userErrors: [],
+          },
+        },
+      };
+    },
+  });
+
+  const query = calls[0][2];
+  const variables = calls[0][3];
+
+  assert.match(query, /orderCancel/);
+  assert.doesNotMatch(query, /refundCreate/);
+  assert.doesNotMatch(query, /refundMethod/);
+  assert.equal(variables.restock, true);
+  assert.equal(variables.notifyCustomer, false);
+  assert.equal(result.job.id, "gid://shopify/Job/abc-123");
+});
+
+test("getFraudOrderRestockOption follows production config without test variant gating", () => {
+  assert.equal(getFraudOrderRestockOption({
+    fraudAssessment: {
+      skipped: false,
+      result: {
+        config: { enabled: true, restockInventory: true },
+        riskLevel: "HIGH",
+      },
+    },
+    shouldBlockZinc: true,
+  }), true);
+
+  assert.equal(getFraudOrderRestockOption({
+    fraudAssessment: {
+      skipped: false,
+      result: {
+        config: { enabled: true, restockInventory: false },
+        riskLevel: "HIGH",
+      },
+    },
+    shouldBlockZinc: true,
+  }), false);
+});
+
+test("handleFraudOrderCancellation logs safe fields and records requested cancellation", async () => {
+  const updates = [];
+  const logs = [];
+  const enqueued = [];
+
+  const result = await handleFraudOrderCancellation({
+    shop: SHOP,
+    accessToken: "offline_token",
+    fraudAssessment: {
+      skipped: false,
+      result: {
+        config: { enabled: true, autoCancelHighRisk: true, restockInventory: true },
+        riskLevel: "HIGH",
+        order: { id: "gid://shopify/Order/123", name: "#123" },
+        assessment: {
+          shopifyOrderId: "gid://shopify/Order/123",
+          orderName: "#123",
+        },
+      },
+    },
+    shouldBlockZinc: true,
+  }, {
+    prismaClient: {
+      fraudOrderAssessment: {
+        update: async (args) => updates.push(args),
+      },
+    },
+    cancelShopifyFraudOrder: async (args) => ({
+      job: { id: "gid://shopify/Job/abc-123", done: false },
+      safeLog: {
+        shop: args.shop,
+        shopifyOrderId: args.shopifyOrderId,
+        shouldRestock: args.restock,
+        notifyCustomer: false,
+        orderCancelJobId: "gid://shopify/Job/abc-123",
+        orderCancelJobDone: false,
+        userErrors: [],
+        orderCancelUserErrors: [],
+      },
+    }),
+    enqueueFraudCancelPollJob: async (args) => enqueued.push(args),
+    logEvent: (event, details) => logs.push({ event, details }),
+  });
+
+  assert.equal(result.status, "REQUESTED");
+  assert.equal(updates[0].data.cancellationStatus, "REQUESTED");
+  assert.equal(enqueued[0].cancelJobId, "gid://shopify/Job/abc-123");
+  assert.equal(logs.find((item) => item.event === "fraud_order_cancel_options_resolved").details.shouldRestock, true);
+  assert.equal(logs.find((item) => item.event === "fraud_order_cancel_request_prepared").details.notifyCustomer, false);
+  assert.equal(logs.find((item) => item.event === "fraud_order_cancel_response_received").details.refundPaymentUsed, false);
+  assert.equal(logs.find((item) => item.event === "fraud_order_cancel_response_received").details.refundMethodUsed, false);
 });
 
 test("canUseFraudTestSimulationForShop blocks production runtime", () => {
