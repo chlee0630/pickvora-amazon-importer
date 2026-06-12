@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildFraudBlockedProviderUpdate,
   buildProviderFailureSummary,
   getProviderFailureStatus,
+  isFraudBlockedProviderOrder,
   isDryRunProviderSubmission,
   runFraudAssessmentForOrder,
+  shouldBlockZincForFraud,
   shouldSkipZincOrderSubmission,
 } from "../app/workers/order-worker.server.js";
 
@@ -151,6 +154,81 @@ test("runFraudAssessmentForOrder treats fraud assessment failures as non-blockin
   assert.equal(events[0].event, "fraud_assessment_failed_non_blocking");
   assert.match(events[0].details.error, /risk fetch failed/);
   assert.match(errors[0].join(" "), /fraud_assessment_failed_non_blocking/);
+});
+
+test("shouldBlockZincForFraud blocks only HIGH dry-run would-cancel Zinc candidates", () => {
+  const config = {
+    enabled: true,
+    dryRun: true,
+    autoCancelHighRisk: true,
+  };
+
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: { config, riskLevel: "HIGH", decision: "WOULD_CANCEL" },
+  }), true);
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: { config, riskLevel: "MEDIUM", decision: "WOULD_CANCEL" },
+  }), false);
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: { config, riskLevel: "HIGH", decision: "REVIEW" },
+  }), false);
+});
+
+test("shouldBlockZincForFraud keeps existing flow unless dry-run high risk auto-cancel is enabled", () => {
+  assert.equal(shouldBlockZincForFraud({ skipped: true, reason: "assessment_failed" }), false);
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: {
+      config: { enabled: false, dryRun: true, autoCancelHighRisk: true },
+      riskLevel: "HIGH",
+      decision: "WOULD_CANCEL",
+    },
+  }), false);
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: {
+      config: { enabled: true, dryRun: false, autoCancelHighRisk: true },
+      riskLevel: "HIGH",
+      decision: "WOULD_CANCEL",
+    },
+  }), false);
+  assert.equal(shouldBlockZincForFraud({
+    skipped: false,
+    result: {
+      config: { enabled: true, dryRun: true, autoCancelHighRisk: false },
+      riskLevel: "HIGH",
+      decision: "WOULD_CANCEL",
+    },
+  }), false);
+});
+
+test("buildFraudBlockedProviderUpdate records manual review without Zinc submit payload", () => {
+  assert.deepEqual(buildFraudBlockedProviderUpdate(), {
+    status: "MANUAL_REVIEW",
+    providerOrderId: null,
+    requestPayload: null,
+    lastError: "Blocked before Zinc submit due to HIGH fraud risk",
+    providerFailureCode: "FRAUD_HIGH_RISK",
+    providerFailureMessage: "Blocked before Zinc submit due to HIGH fraud risk",
+  });
+});
+
+test("isFraudBlockedProviderOrder recognizes existing HIGH-risk Zinc blocks", () => {
+  assert.equal(isFraudBlockedProviderOrder({
+    status: "MANUAL_REVIEW",
+    providerFailureCode: "FRAUD_HIGH_RISK",
+  }), true);
+  assert.equal(isFraudBlockedProviderOrder({
+    status: "MANUAL_REVIEW",
+    providerFailureCode: "NO_PROVIDER_AVAILABLE",
+  }), false);
+  assert.equal(isFraudBlockedProviderOrder({
+    status: "FAILED",
+    providerFailureCode: "FRAUD_HIGH_RISK",
+  }), false);
 });
 
 function buildOrderJob(overrides = {}) {

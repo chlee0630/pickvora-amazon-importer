@@ -100,6 +100,14 @@ export function initOrderWorkers() {
 
 async function processCreateOrderJob(job) {
   const existingProviderOrder = await findExistingProviderOrder(job);
+  if (isFraudBlockedProviderOrder(existingProviderOrder)) {
+    logWorkerEvent("fraud_zinc_submit_blocked_duplicate_skipped", job, {
+      provider: existingProviderOrder.provider,
+      providerFailureCode: existingProviderOrder.providerFailureCode,
+    });
+    return;
+  }
+
   if (shouldSkipZincOrderSubmission(existingProviderOrder)) {
     if (existingProviderOrder?.providerOrderId) {
       logProviderEvent("duplicate_provider_order_prevented", {
@@ -184,11 +192,21 @@ async function processCreateOrderJob(job) {
   const session = await getOfflineSession(job.shop);
   const order = await fetchShopifyOrder(job.shop, session.accessToken, job.shopifyOrderId);
   validateOrder(order);
-  await runFraudAssessmentForOrder({
+  const fraudAssessment = await runFraudAssessmentForOrder({
     job: providerJob,
     accessToken: session.accessToken,
     shopifyOrderId: order.id || job.shopifyOrderId,
   });
+
+  if (selected.providerName === "zinc" && shouldBlockZincForFraud(fraudAssessment)) {
+    await markProviderFraudBlocked(providerOrder.id);
+    logWorkerEvent("fraud_zinc_submit_blocked", providerJob, {
+      riskLevel: fraudAssessment.result.riskLevel,
+      decision: fraudAssessment.result.decision,
+      actionMode: fraudAssessment.result.actionMode,
+    });
+    return;
+  }
 
   const orderInput = await buildProviderOrderInput(job.shop, order);
   const idempotencyKey = selected.providerName === "zinc"
@@ -346,6 +364,7 @@ async function findExistingProviderOrder(job) {
       OR: [
         { providerOrderId: { not: null } },
         { requestPayload: { not: null } },
+        { status: "MANUAL_REVIEW", providerFailureCode: "FRAUD_HIGH_RISK" },
       ],
     },
     orderBy: { updatedAt: "desc" },
@@ -394,6 +413,20 @@ async function updateProviderFailure(providerOrderId, normalizedError) {
       responsePayload: normalizedError.raw_response
         ? JSON.stringify(maskSensitivePayload(normalizedError.raw_response))
         : null,
+      processingLockedAt: null,
+      providerLastAttemptAt: new Date(),
+    },
+  });
+}
+
+async function markProviderFraudBlocked(providerOrderId) {
+  const failure = buildFraudBlockedProviderUpdate();
+  await prisma.providerOrder.update({
+    where: { id: providerOrderId },
+    data: {
+      ...failure,
+      providerOrderId: null,
+      requestPayload: null,
       processingLockedAt: null,
       providerLastAttemptAt: new Date(),
     },
@@ -605,6 +638,38 @@ export function shouldSkipZincOrderSubmission(providerOrder) {
 
 export function isDryRunProviderSubmission(result) {
   return Boolean(result?.dryRun || result?.status === "dry_run");
+}
+
+export function shouldBlockZincForFraud(fraudAssessment) {
+  if (fraudAssessment?.skipped) return false;
+  const result = fraudAssessment?.result;
+  const config = result?.config;
+  return Boolean(
+    config?.enabled &&
+    config.dryRun &&
+    config.autoCancelHighRisk &&
+    result.riskLevel === "HIGH" &&
+    result.decision === "WOULD_CANCEL"
+  );
+}
+
+export function isFraudBlockedProviderOrder(providerOrder) {
+  return Boolean(
+    providerOrder?.status === "MANUAL_REVIEW" &&
+    providerOrder.providerFailureCode === "FRAUD_HIGH_RISK"
+  );
+}
+
+export function buildFraudBlockedProviderUpdate() {
+  const message = "Blocked before Zinc submit due to HIGH fraud risk";
+  return {
+    status: "MANUAL_REVIEW",
+    providerOrderId: null,
+    requestPayload: null,
+    lastError: message,
+    providerFailureCode: "FRAUD_HIGH_RISK",
+    providerFailureMessage: message,
+  };
 }
 
 export function getProviderFailureStatus(normalizedError) {
