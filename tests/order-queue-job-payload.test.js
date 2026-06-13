@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { sanitizeOrderWebhookLogPayload } from "../app/utils/order-webhook-log-payload.server.js";
+import { sanitizeOrderCreateQueuePayload } from "../app/utils/order-queue-job-payload.server.js";
 
-test("sanitizeOrderWebhookLogPayload stores only safe order and line item fields", () => {
+test("sanitizeOrderCreateQueuePayload stores only minimal order.create fields", () => {
   const payload = {
     id: 123,
     admin_graphql_api_id: "gid://shopify/Order/123",
-    name: "#1020",
+    name: "#1022",
     test: true,
     financial_status: "paid",
-    fulfillment_status: null,
+    fulfillment_status: "unfulfilled",
     total_price: "10.00",
     currency: "USD",
     contact_email: "customer@example.com",
@@ -21,50 +21,37 @@ test("sanitizeOrderWebhookLogPayload stores only safe order and line item fields
     checkout_token: "checkout-token",
     order_status_url: "https://example.myshopify.com/orders/123/authenticate?key=secret",
     browser_ip: "203.0.113.10",
-    customer: {
-      id: 1,
-      email: "customer@example.com",
-    },
-    billing_address: {
-      address1: "billing address",
-    },
-    shipping_address: {
-      address1: "shipping address",
-    },
-    client_details: {
-      browser_ip: "203.0.113.10",
-    },
+    customer: { id: 1, email: "customer@example.com" },
+    billing_address: { address1: "billing address" },
+    shipping_address: { address1: "shipping address" },
+    client_details: { browser_ip: "203.0.113.10" },
     payment_gateway_names: ["bogus"],
-    payment_details: {
-      credit_card_number: "4242",
-    },
+    payment_details: { credit_card_number: "4242" },
     line_items: [
       {
+        id: 999,
+        admin_graphql_api_id: "gid://shopify/LineItem/999",
         product_id: 100,
         variant_id: 200,
         sku: "PICKVORA-RESTOCK-TEST",
         title: "Pickvora Restock Test Product",
         quantity: 1,
+        price: "10.00",
         vendor: "private vendor",
-        properties: [
-          { name: "customer note", value: "do not store" },
-        ],
-        discount_allocations: [
-          { amount: "1.00" },
-        ],
+        properties: [{ name: "customer note", value: "do not store" }],
       },
     ],
   };
 
-  const sanitized = sanitizeOrderWebhookLogPayload(payload);
+  const sanitized = sanitizeOrderCreateQueuePayload(payload);
 
   assert.deepEqual(sanitized, {
     id: 123,
     admin_graphql_api_id: "gid://shopify/Order/123",
-    name: "#1020",
+    name: "#1022",
     test: true,
     financial_status: "paid",
-    fulfillment_status: null,
+    fulfillment_status: "unfulfilled",
     total_price: "10.00",
     currency: "USD",
     line_items: [
@@ -80,8 +67,8 @@ test("sanitizeOrderWebhookLogPayload stores only safe order and line item fields
   assertNoSensitivePayloadContent(sanitized);
 });
 
-test("sanitizeOrderWebhookLogPayload handles missing line items without preserving raw payload", () => {
-  const sanitized = sanitizeOrderWebhookLogPayload({
+test("sanitizeOrderCreateQueuePayload handles missing line_items without preserving raw payload", () => {
+  const sanitized = sanitizeOrderCreateQueuePayload({
     contact_email: "customer@example.com",
     order_status_url: "https://example.myshopify.com/orders/123/authenticate?key=secret",
   });
@@ -111,6 +98,6 @@ function assertNoSensitivePayloadContent(value) {
     "secret",
     "do not store",
   ]) {
-    assert.equal(serialized.includes(forbidden), false, `stored sensitive webhook payload content: ${forbidden}`);
+    assert.equal(serialized.includes(forbidden), false, `stored sensitive queue payload content: ${forbidden}`);
   }
 }

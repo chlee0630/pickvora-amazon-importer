@@ -1,4 +1,4 @@
-const ORDER_WEBHOOK_LOG_ORDER_FIELDS = [
+const ORDER_CREATE_QUEUE_ORDER_FIELDS = [
   "id",
   "admin_graphql_api_id",
   "name",
@@ -9,7 +9,7 @@ const ORDER_WEBHOOK_LOG_ORDER_FIELDS = [
   "currency",
 ];
 
-const ORDER_WEBHOOK_LOG_LINE_ITEM_FIELDS = [
+const ORDER_CREATE_QUEUE_LINE_ITEM_FIELDS = [
   "product_id",
   "variant_id",
   "sku",
@@ -17,14 +17,14 @@ const ORDER_WEBHOOK_LOG_LINE_ITEM_FIELDS = [
   "quantity",
 ];
 
-export function sanitizeOrderWebhookLogPayload(payload = {}) {
+export function sanitizeOrderCreateQueuePayload(payload = {}) {
   if (!payload || typeof payload !== "object") return {};
 
-  const safePayload = pickDefinedFields(payload, ORDER_WEBHOOK_LOG_ORDER_FIELDS);
+  const safePayload = pickDefinedFields(payload, ORDER_CREATE_QUEUE_ORDER_FIELDS);
   const lineItems = Array.isArray(payload.line_items) ? payload.line_items : [];
   safePayload.line_items = lineItems
     .filter((item) => item && typeof item === "object")
-    .map((item) => pickDefinedFields(item, ORDER_WEBHOOK_LOG_LINE_ITEM_FIELDS));
+    .map((item) => pickDefinedFields(item, ORDER_CREATE_QUEUE_LINE_ITEM_FIELDS));
 
   return safePayload;
 }
