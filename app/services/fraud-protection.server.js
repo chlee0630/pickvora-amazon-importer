@@ -1,6 +1,7 @@
 import prisma from "../db.server.js";
 import { enqueueFraudCancelPollJob } from "../queues/order-queue.server.js";
 import { withApiRetry } from "../utils/api-retry.server.js";
+import { isProductionRuntime } from "../utils/runtime-flags.server.js";
 import { trackApiCall } from "./monitoring/api-metrics.server.js";
 import { recordMonitoringEvent } from "./monitoring/monitoring-service.server.js";
 
@@ -8,6 +9,14 @@ const API_VERSION = "2025-10";
 const DEFAULT_TIMEOUT_MS = 30000;
 const FRAUD_ORDER_CANCEL_STAFF_NOTE = "Pickvora fraud protection cancellation";
 const SAFE_ORDER_CANCEL_MESSAGE_MAX_LENGTH = 240;
+const PRODUCTION_FRAUD_REFUND_SHOP = "cmgpwd-ty.myshopify.com";
+const DEV_FRAUD_REFUND_SHOP = "pickvora-dev.myshopify.com";
+const FRAUD_ORDER_CANCEL_BLOCKED_ORDER_NAMES = new Set(
+  Array.from({ length: 19 }, (_, index) => {
+    const orderNumber = String(1005 + index);
+    return [`#${orderNumber}`, orderNumber];
+  }).flat()
+);
 
 export const DEFAULT_FRAUD_PROTECTION_CONFIG = {
   enabled: false,
@@ -234,17 +243,37 @@ export async function fetchShopifyOrderRisk(shop, accessToken, shopifyOrderId) {
   return res.data?.order || null;
 }
 
-export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderId, restock = false }, deps = {}) {
+export async function cancelShopifyFraudOrder({
+  shop,
+  accessToken,
+  shopifyOrderId,
+  restock = false,
+  refundPayment = false,
+}, deps = {}) {
   const fetchFn = deps.adminFetch || adminFetch;
   if (!isValidShopifyOrderGid(shopifyOrderId)) {
     throw new Error("Invalid Shopify order id for fraud cancellation.");
   }
   const shouldRestock = Boolean(restock);
+  const shouldRefund = Boolean(refundPayment && canUseFraudOrderRefundForShop(shop));
+  const refundMethodDefinition = shouldRefund ? "\n      $refundMethod: OrderCancelRefundMethodInput" : "";
+  const refundMethodArgument = shouldRefund ? "\n        refundMethod: $refundMethod" : "";
+  const variables = {
+    orderId: shopifyOrderId,
+    notifyCustomer: false,
+    restock: shouldRestock,
+    reason: "FRAUD",
+    staffNote: FRAUD_ORDER_CANCEL_STAFF_NOTE,
+  };
+  if (shouldRefund) {
+    variables.refundMethod = { originalPaymentMethodsRefund: true };
+  }
 
   const res = await fetchFn(shop, accessToken, `
     mutation cancelFraudOrder(
       $orderId: ID!
       $notifyCustomer: Boolean
+      ${refundMethodDefinition}
       $restock: Boolean!
       $reason: OrderCancelReason!
       $staffNote: String
@@ -252,6 +281,7 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
       orderCancel(
         orderId: $orderId
         notifyCustomer: $notifyCustomer
+        ${refundMethodArgument}
         restock: $restock
         reason: $reason
         staffNote: $staffNote
@@ -271,13 +301,7 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
         }
       }
     }
-  `, {
-    orderId: shopifyOrderId,
-    notifyCustomer: false,
-    restock: shouldRestock,
-    reason: "FRAUD",
-    staffNote: FRAUD_ORDER_CANCEL_STAFF_NOTE,
-  }, DEFAULT_TIMEOUT_MS, "fraud_order_cancel");
+  `, variables, DEFAULT_TIMEOUT_MS, "fraud_order_cancel");
 
   if (res.errors?.length) {
     const error = new Error("Shopify orderCancel returned GraphQL errors.");
@@ -289,6 +313,8 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
       shop,
       shopifyOrderId,
       shouldRestock,
+      shouldRefund,
+      refundMethodType: shouldRefund ? "ORIGINAL_PAYMENT_METHODS" : null,
       notifyCustomer: false,
       graphQLErrors: res.errors,
     });
@@ -308,6 +334,8 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
       shop,
       shopifyOrderId,
       shouldRestock,
+      shouldRefund,
+      refundMethodType: shouldRefund ? "ORIGINAL_PAYMENT_METHODS" : null,
       notifyCustomer: false,
       job: payload.job || null,
       userErrors: payload.userErrors || [],
@@ -322,6 +350,8 @@ export async function cancelShopifyFraudOrder({ shop, accessToken, shopifyOrderI
       shop,
       shopifyOrderId,
       shouldRestock,
+      shouldRefund,
+      refundMethodType: shouldRefund ? "ORIGINAL_PAYMENT_METHODS" : null,
       notifyCustomer: false,
       job: payload.job || null,
       userErrors: payload.userErrors || [],
@@ -513,6 +543,12 @@ export async function handleFraudOrderCancellation({
     fraudAssessment,
     shouldBlockZinc,
   });
+  const refundPayment = getFraudOrderRefundOption({
+    shop,
+    order,
+    fraudAssessment,
+    shouldBlockZinc,
+  });
   const baseLogDetails = {
     shop,
     shopifyOrderId: assessment.shopifyOrderId,
@@ -520,9 +556,11 @@ export async function handleFraudOrderCancellation({
     riskLevel: result?.riskLevel || null,
     shouldBlockZinc,
     shouldRestock: restock,
+    shouldRefund: refundPayment,
+    refundMethodType: refundPayment ? "ORIGINAL_PAYMENT_METHODS" : null,
     notifyCustomer: false,
-    refundPaymentUsed: false,
-    refundMethodUsed: false,
+    refundPaymentUsed: refundPayment,
+    refundMethodUsed: refundPayment,
   };
   logEvent("fraud_order_cancel_options_resolved", buildSafeFraudOrderCancelLogDetails(baseLogDetails));
 
@@ -533,6 +571,7 @@ export async function handleFraudOrderCancellation({
       accessToken,
       shopifyOrderId: assessment.shopifyOrderId,
       restock,
+      refundPayment,
     });
     logEvent("fraud_order_cancel_response_received", buildSafeFraudOrderCancelLogDetails({
       ...baseLogDetails,
@@ -542,6 +581,8 @@ export async function handleFraudOrderCancellation({
         orderName: assessment.orderName || order?.name || null,
         shopifyOrderId: assessment.shopifyOrderId,
         shouldRestock: restock,
+        shouldRefund: refundPayment,
+        refundMethodType: refundPayment ? "ORIGINAL_PAYMENT_METHODS" : null,
         notifyCustomer: false,
         job: cancellation.job || null,
       }),
@@ -571,6 +612,10 @@ export async function handleFraudOrderCancellation({
       jobId: cancellation.job?.id || null,
       jobDone: Boolean(cancellation.job?.done),
       shouldRestock: restock,
+      shouldRefund: refundPayment,
+      refundMethodType: refundPayment ? "ORIGINAL_PAYMENT_METHODS" : null,
+      refundPaymentUsed: refundPayment,
+      refundMethodUsed: refundPayment,
       orderCancelJobDone: Boolean(cancellation.job?.done),
       hasCancellationError: false,
     }));
@@ -584,6 +629,8 @@ export async function handleFraudOrderCancellation({
       shop,
       shopifyOrderId: assessment.shopifyOrderId,
       shouldRestock: restock,
+      shouldRefund: refundPayment,
+      refundMethodType: refundPayment ? "ORIGINAL_PAYMENT_METHODS" : null,
       notifyCustomer: false,
       userErrors: err?.userErrors || [],
     });
@@ -794,6 +841,7 @@ function getHighestRiskLevel(assessments) {
 export function getFraudOrderCancelEligibility({ order, fraudAssessment, shouldBlockZinc }) {
   const result = fraudAssessment?.result;
   const assessment = result?.assessment;
+  const orderName = String(order?.name || assessment?.orderName || "").trim();
   const shopifyOrderId = String(order?.id || assessment?.shopifyOrderId || "").trim();
 
   if (fraudAssessment?.skipped) return { allowed: false, reason: "fraud_assessment_skipped" };
@@ -801,6 +849,8 @@ export function getFraudOrderCancelEligibility({ order, fraudAssessment, shouldB
   if (!result?.config?.autoCancelHighRisk) return { allowed: false, reason: "high_risk_auto_cancel_disabled" };
   if (result?.riskLevel !== "HIGH") return { allowed: false, reason: "risk_not_high" };
   if (!shouldBlockZinc) return { allowed: false, reason: "zinc_block_not_enabled" };
+  if (assessment?.cancellationStatus) return { allowed: false, reason: "fraud_order_cancel_already_recorded" };
+  if (isBlockedFraudOrderCancelName(orderName)) return { allowed: false, reason: "blocked_test_order" };
   if (!isValidShopifyOrderGid(shopifyOrderId)) return { allowed: false, reason: "invalid_shopify_order_id" };
   return { allowed: true, reason: "eligible" };
 }
@@ -813,6 +863,49 @@ export function getFraudOrderRestockOption({ fraudAssessment, shouldBlockZinc })
   if (result?.riskLevel !== "HIGH") return false;
   if (!shouldBlockZinc) return false;
   return true;
+}
+
+export function getFraudOrderRefundOption({ shop, order, fraudAssessment, shouldBlockZinc }) {
+  const result = fraudAssessment?.result;
+  const assessment = result?.assessment;
+  const orderName = String(order?.name || assessment?.orderName || "").trim();
+  const shopifyOrderId = String(order?.id || assessment?.shopifyOrderId || "").trim();
+
+  if (!canUseFraudOrderRefundForShop(shop)) return false;
+  if (fraudAssessment?.skipped) return false;
+  if (!result?.config?.enabled) return false;
+  if (result.config.dryRun) return false;
+  if (!result.config.autoCancelHighRisk) return false;
+  if (!result.config.blockZincOnHighRisk) return false;
+  if (!result.config.refundPayment) return false;
+  if (result.config.notifyCustomer !== false) return false;
+  if (result.riskLevel !== "HIGH") return false;
+  if (result.decision !== "CANCEL_REQUIRED") return false;
+  if (!shouldBlockZinc) return false;
+  if (assessment?.cancellationStatus) return false;
+  if (isBlockedFraudOrderCancelName(orderName)) return false;
+  if (!isValidShopifyOrderGid(shopifyOrderId)) return false;
+  return true;
+}
+
+export function canUseFraudOrderRefundForShop(shop) {
+  if (!shop) return false;
+  if (String(process.env.FRAUD_ORDER_CANCEL_ENABLED || "") !== "true") return false;
+  if (String(process.env.FRAUD_ORDER_REFUND_ENABLED || "") !== "true") return false;
+
+  const normalizedShop = String(shop).trim().toLowerCase();
+  if (isProductionRuntime()) {
+    return normalizedShop === PRODUCTION_FRAUD_REFUND_SHOP;
+  }
+
+  const protectedShop = String(process.env.SHOP_CUSTOM_DOMAIN || "").trim().toLowerCase();
+  if (protectedShop && normalizedShop === protectedShop) return false;
+  return normalizedShop === DEV_FRAUD_REFUND_SHOP;
+}
+
+export function isBlockedFraudOrderCancelName(value) {
+  const normalized = String(value || "").trim();
+  return Boolean(normalized && FRAUD_ORDER_CANCEL_BLOCKED_ORDER_NAMES.has(normalized));
 }
 
 function isValidShopifyOrderGid(value) {
@@ -902,6 +995,8 @@ function buildSafeOrderCancelResponseLogDetails({
   orderName,
   shopifyOrderId,
   shouldRestock,
+  shouldRefund,
+  refundMethodType,
   notifyCustomer,
   job,
   orderCancelJobId,
@@ -917,7 +1012,11 @@ function buildSafeOrderCancelResponseLogDetails({
     orderName,
     shopifyOrderId,
     shouldRestock,
+    shouldRefund,
+    refundMethodType,
     notifyCustomer: Boolean(notifyCustomer),
+    refundPaymentUsed: Boolean(shouldRefund),
+    refundMethodUsed: Boolean(shouldRefund),
     orderCancelJobId: orderCancelJobId || job?.id || null,
     orderCancelJobDone: Boolean(orderCancelJobDone ?? job?.done),
     userErrors: safeUserErrors,
@@ -948,9 +1047,11 @@ function buildSafeFraudOrderCancelLogDetails(details = {}) {
     riskLevel: details.riskLevel || null,
     shouldBlockZinc: Boolean(details.shouldBlockZinc),
     shouldRestock: Boolean(details.shouldRestock),
+    shouldRefund: Boolean(details.shouldRefund),
+    refundMethodType: details.refundMethodType || null,
     notifyCustomer: Boolean(details.notifyCustomer),
-    refundPaymentUsed: false,
-    refundMethodUsed: false,
+    refundPaymentUsed: Boolean(details.refundPaymentUsed),
+    refundMethodUsed: Boolean(details.refundMethodUsed),
     orderCancelJobId: details.orderCancelJobId || details.jobId || null,
     orderCancelJobDone: Boolean(details.orderCancelJobDone ?? details.jobDone),
     userErrors,

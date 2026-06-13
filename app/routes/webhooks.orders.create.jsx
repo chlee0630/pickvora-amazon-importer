@@ -1,7 +1,7 @@
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { enqueueOrderProcessingJob } from "../queues/order-queue.server";
-import { maskSensitivePayload } from "../utils/failure-audit-log.server.js";
+import { sanitizeOrderWebhookLogPayload } from "../utils/order-webhook-log-payload.server.js";
 
 export const action = async ({ request }) => {
   const webhookId = request.headers.get("x-shopify-webhook-id");
@@ -25,7 +25,7 @@ export const action = async ({ request }) => {
         webhookId,
         shopifyOrderId: "unknown",
         status: "ignored",
-        payload: JSON.stringify(maskSensitivePayload(payload || {})),
+        payload: JSON.stringify(sanitizeOrderWebhookLogPayload(payload || {})),
         error: "Missing Shopify order id",
       },
     });
@@ -78,7 +78,7 @@ export const action = async ({ request }) => {
         webhookId,
         shopifyOrderId,
         status: "enqueued",
-        payload: JSON.stringify(maskSensitivePayload(payload || {})),
+        payload: JSON.stringify(sanitizeOrderWebhookLogPayload(payload || {})),
       },
     });
   } catch (err) {

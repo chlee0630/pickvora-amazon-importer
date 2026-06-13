@@ -3,8 +3,11 @@ import test from "node:test";
 
 import {
   cancelShopifyFraudOrder,
+  canUseFraudOrderRefundForShop,
   createFraudTestAssessment,
   fetchShopifyOrderRisk,
+  getFraudOrderCancelEligibility,
+  getFraudOrderRefundOption,
   getFraudOrderRestockOption,
   handleFraudOrderCancellation,
   updateFraudProtectionConfig,
@@ -147,6 +150,166 @@ test("cancelShopifyFraudOrder sends orderCancel with restock and no refund metho
   assert.equal(result.job.id, "gid://shopify/Job/abc-123");
 });
 
+test("cancelShopifyFraudOrder includes original payment refund method only for guarded production refund", async () => {
+  const original = setRefundEnv({
+    NODE_ENV: "production",
+    SHOPIFY_APP_ENV: "production",
+    FRAUD_ORDER_CANCEL_ENABLED: "true",
+    FRAUD_ORDER_REFUND_ENABLED: "true",
+  });
+  const calls = [];
+
+  try {
+    await cancelShopifyFraudOrder({
+      shop: "cmgpwd-ty.myshopify.com",
+      accessToken: "offline_token",
+      shopifyOrderId: "gid://shopify/Order/123",
+      restock: true,
+      refundPayment: true,
+    }, {
+      adminFetch: async (...args) => {
+        calls.push(args);
+        return {
+          data: {
+            orderCancel: {
+              job: { id: "gid://shopify/Job/abc-123", done: false },
+              orderCancelUserErrors: [],
+              userErrors: [],
+            },
+          },
+        };
+      },
+    });
+
+    const query = calls[0][2];
+    const variables = calls[0][3];
+    assert.match(query, /orderCancel/);
+    assert.match(query, /refundMethod/);
+    assert.doesNotMatch(query, /refundCreate/);
+    assert.deepEqual(variables.refundMethod, { originalPaymentMethodsRefund: true });
+    assert.equal(variables.restock, true);
+    assert.equal(variables.notifyCustomer, false);
+  } finally {
+    restoreRefundEnv(original);
+  }
+});
+
+test("cancelShopifyFraudOrder blocks refund method when production guards are missing", async () => {
+  const cases = [
+    {
+      env: { NODE_ENV: "production", SHOPIFY_APP_ENV: "production", FRAUD_ORDER_CANCEL_ENABLED: "", FRAUD_ORDER_REFUND_ENABLED: "true" },
+      shop: "cmgpwd-ty.myshopify.com",
+    },
+    {
+      env: { NODE_ENV: "production", SHOPIFY_APP_ENV: "production", FRAUD_ORDER_CANCEL_ENABLED: "true", FRAUD_ORDER_REFUND_ENABLED: "" },
+      shop: "cmgpwd-ty.myshopify.com",
+    },
+    {
+      env: { NODE_ENV: "production", SHOPIFY_APP_ENV: "production", FRAUD_ORDER_CANCEL_ENABLED: "true", FRAUD_ORDER_REFUND_ENABLED: "true" },
+      shop: "example.myshopify.com",
+    },
+  ];
+
+  for (const item of cases) {
+    const original = setRefundEnv(item.env);
+    const calls = [];
+    try {
+      await cancelShopifyFraudOrder({
+        shop: item.shop,
+        accessToken: "offline_token",
+        shopifyOrderId: "gid://shopify/Order/123",
+        restock: true,
+        refundPayment: true,
+      }, {
+        adminFetch: async (...args) => {
+          calls.push(args);
+          return {
+            data: {
+              orderCancel: {
+                job: { id: "gid://shopify/Job/abc-123", done: false },
+                orderCancelUserErrors: [],
+                userErrors: [],
+              },
+            },
+          };
+        },
+      });
+
+      const query = calls[0][2];
+      const variables = calls[0][3];
+      assert.doesNotMatch(query, /refundMethod/);
+      assert.equal(Object.hasOwn(variables, "refundMethod"), false);
+      assert.equal(variables.notifyCustomer, false);
+    } finally {
+      restoreRefundEnv(original);
+    }
+  }
+});
+
+test("getFraudOrderRefundOption requires production shop, live high-risk cancel decision, config, and no prior cancellation", () => {
+  const original = setRefundEnv({
+    NODE_ENV: "production",
+    SHOPIFY_APP_ENV: "production",
+    FRAUD_ORDER_CANCEL_ENABLED: "true",
+    FRAUD_ORDER_REFUND_ENABLED: "true",
+  });
+
+  try {
+    const base = makeRefundFraudAssessment();
+    assert.equal(canUseFraudOrderRefundForShop("cmgpwd-ty.myshopify.com"), true);
+    assert.equal(getFraudOrderRefundOption({
+      shop: "cmgpwd-ty.myshopify.com",
+      order: base.result.order,
+      fraudAssessment: base,
+      shouldBlockZinc: true,
+    }), true);
+
+    for (const overrides of [
+      { shop: "example.myshopify.com" },
+      { shouldBlockZinc: false },
+      { config: { refundPayment: false } },
+      { config: { notifyCustomer: true } },
+      { config: { dryRun: true } },
+      { config: { blockZincOnHighRisk: false } },
+      { config: { autoCancelHighRisk: false } },
+      { riskLevel: "MEDIUM" },
+      { decision: "WOULD_CANCEL" },
+      { cancellationStatus: "REQUESTED" },
+      { orderName: "#1023" },
+    ]) {
+      const assessment = makeRefundFraudAssessment(overrides);
+      assert.equal(getFraudOrderRefundOption({
+        shop: overrides.shop || "cmgpwd-ty.myshopify.com",
+        order: assessment.result.order,
+        fraudAssessment: assessment,
+        shouldBlockZinc: overrides.shouldBlockZinc ?? true,
+      }), false, `expected refund to be blocked for ${JSON.stringify(overrides)}`);
+    }
+  } finally {
+    restoreRefundEnv(original);
+  }
+});
+
+test("canUseFraudOrderRefundForShop allows dev refund only for the dev shop outside production", () => {
+  const original = setRefundEnv({
+    NODE_ENV: "development",
+    SHOPIFY_APP_ENV: "",
+    FRAUD_ORDER_CANCEL_ENABLED: "true",
+    FRAUD_ORDER_REFUND_ENABLED: "true",
+  });
+
+  try {
+    assert.equal(canUseFraudOrderRefundForShop("pickvora-dev.myshopify.com"), true);
+    assert.equal(canUseFraudOrderRefundForShop("cmgpwd-ty.myshopify.com"), false);
+    assert.equal(canUseFraudOrderRefundForShop("example.myshopify.com"), false);
+
+    process.env.SHOP_CUSTOM_DOMAIN = "pickvora-dev.myshopify.com";
+    assert.equal(canUseFraudOrderRefundForShop("pickvora-dev.myshopify.com"), false);
+  } finally {
+    restoreRefundEnv(original);
+  }
+});
+
 test("getFraudOrderRestockOption follows production config without test variant gating", () => {
   assert.equal(getFraudOrderRestockOption({
     fraudAssessment: {
@@ -222,6 +385,80 @@ test("handleFraudOrderCancellation logs safe fields and records requested cancel
   assert.equal(logs.find((item) => item.event === "fraud_order_cancel_request_prepared").details.notifyCustomer, false);
   assert.equal(logs.find((item) => item.event === "fraud_order_cancel_response_received").details.refundPaymentUsed, false);
   assert.equal(logs.find((item) => item.event === "fraud_order_cancel_response_received").details.refundMethodUsed, false);
+});
+
+test("handleFraudOrderCancellation passes refund only for eligible production refund orders", async () => {
+  const original = setRefundEnv({
+    NODE_ENV: "production",
+    SHOPIFY_APP_ENV: "production",
+    FRAUD_ORDER_CANCEL_ENABLED: "true",
+    FRAUD_ORDER_REFUND_ENABLED: "true",
+  });
+  const updates = [];
+  const logs = [];
+  const cancelCalls = [];
+
+  try {
+    const result = await handleFraudOrderCancellation({
+      shop: "cmgpwd-ty.myshopify.com",
+      accessToken: "offline_token",
+      fraudAssessment: makeRefundFraudAssessment(),
+      shouldBlockZinc: true,
+    }, {
+      prismaClient: {
+        fraudOrderAssessment: {
+          update: async (args) => updates.push(args),
+        },
+      },
+      cancelShopifyFraudOrder: async (args) => {
+        cancelCalls.push(args);
+        return {
+          job: { id: "gid://shopify/Job/abc-123", done: false },
+          safeLog: {
+            shop: args.shop,
+            shopifyOrderId: args.shopifyOrderId,
+            shouldRestock: args.restock,
+            shouldRefund: args.refundPayment,
+            refundMethodType: args.refundPayment ? "ORIGINAL_PAYMENT_METHODS" : null,
+            notifyCustomer: false,
+            refundPaymentUsed: args.refundPayment,
+            refundMethodUsed: args.refundPayment,
+            orderCancelJobId: "gid://shopify/Job/abc-123",
+            orderCancelJobDone: false,
+            userErrors: [],
+            orderCancelUserErrors: [],
+          },
+        };
+      },
+      enqueueFraudCancelPollJob: async () => {},
+      logEvent: (event, details) => logs.push({ event, details }),
+    });
+
+    assert.equal(result.status, "REQUESTED");
+    assert.equal(cancelCalls[0].refundPayment, true);
+    assert.equal(cancelCalls[0].restock, true);
+    assert.equal(updates[0].data.cancellationStatus, "REQUESTED");
+    assert.equal(logs.find((item) => item.event === "fraud_order_cancel_options_resolved").details.shouldRefund, true);
+    assert.equal(logs.find((item) => item.event === "fraud_order_cancel_request_prepared").details.refundPaymentUsed, true);
+    assert.equal(logs.find((item) => item.event === "fraud_order_cancel_response_received").details.refundMethodUsed, true);
+    assertNoSensitiveLogKeys(logs);
+  } finally {
+    restoreRefundEnv(original);
+  }
+});
+
+test("getFraudOrderCancelEligibility blocks repeated cancellation and protected historical orders", () => {
+  assert.deepEqual(getFraudOrderCancelEligibility({
+    order: { id: "gid://shopify/Order/123", name: "#1023" },
+    fraudAssessment: makeRefundFraudAssessment({ orderName: "#1023" }),
+    shouldBlockZinc: true,
+  }), { allowed: false, reason: "blocked_test_order" });
+
+  assert.deepEqual(getFraudOrderCancelEligibility({
+    order: { id: "gid://shopify/Order/123", name: "#1024" },
+    fraudAssessment: makeRefundFraudAssessment({ orderName: "#1024", cancellationStatus: "REQUESTED" }),
+    shouldBlockZinc: true,
+  }), { allowed: false, reason: "fraud_order_cancel_already_recorded" });
 });
 
 test("canUseFraudTestSimulationForShop blocks production runtime", () => {
@@ -359,4 +596,100 @@ function makeSimulationPrismaClient(calls, config) {
   }
 
   return client;
+}
+
+function makeRefundFraudAssessment(overrides = {}) {
+  const config = {
+    enabled: true,
+    dryRun: false,
+    autoCancelHighRisk: true,
+    blockZincOnHighRisk: true,
+    restockInventory: true,
+    refundPayment: true,
+    notifyCustomer: false,
+    ...(overrides.config || {}),
+  };
+  const orderName = overrides.orderName || "#1024";
+  return {
+    skipped: Boolean(overrides.skipped),
+    result: {
+      config,
+      riskLevel: overrides.riskLevel || "HIGH",
+      decision: overrides.decision || "CANCEL_REQUIRED",
+      actionMode: "LIVE_PENDING_CANCEL",
+      order: {
+        id: "gid://shopify/Order/123",
+        name: orderName,
+      },
+      assessment: {
+        shopifyOrderId: "gid://shopify/Order/123",
+        orderName,
+        cancellationStatus: overrides.cancellationStatus || null,
+      },
+    },
+  };
+}
+
+function setRefundEnv(overrides = {}) {
+  const original = {
+    NODE_ENV: process.env.NODE_ENV,
+    SHOPIFY_APP_ENV: process.env.SHOPIFY_APP_ENV,
+    SHOP_CUSTOM_DOMAIN: process.env.SHOP_CUSTOM_DOMAIN,
+    FRAUD_ORDER_CANCEL_ENABLED: process.env.FRAUD_ORDER_CANCEL_ENABLED,
+    FRAUD_ORDER_REFUND_ENABLED: process.env.FRAUD_ORDER_REFUND_ENABLED,
+  };
+  process.env.NODE_ENV = overrides.NODE_ENV ?? "";
+  process.env.SHOPIFY_APP_ENV = overrides.SHOPIFY_APP_ENV ?? "";
+  process.env.SHOP_CUSTOM_DOMAIN = overrides.SHOP_CUSTOM_DOMAIN ?? "";
+  process.env.FRAUD_ORDER_CANCEL_ENABLED = overrides.FRAUD_ORDER_CANCEL_ENABLED ?? "";
+  process.env.FRAUD_ORDER_REFUND_ENABLED = overrides.FRAUD_ORDER_REFUND_ENABLED ?? "";
+  return original;
+}
+
+function restoreRefundEnv(original) {
+  restoreEnvValue("NODE_ENV", original.NODE_ENV);
+  restoreEnvValue("SHOPIFY_APP_ENV", original.SHOPIFY_APP_ENV);
+  restoreEnvValue("SHOP_CUSTOM_DOMAIN", original.SHOP_CUSTOM_DOMAIN);
+  restoreEnvValue("FRAUD_ORDER_CANCEL_ENABLED", original.FRAUD_ORDER_CANCEL_ENABLED);
+  restoreEnvValue("FRAUD_ORDER_REFUND_ENABLED", original.FRAUD_ORDER_REFUND_ENABLED);
+}
+
+function restoreEnvValue(key, value) {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
+
+function assertNoSensitiveLogKeys(value) {
+  const blockedKeys = new Set([
+    "accessToken",
+    "token",
+    "apiKey",
+    "secret",
+    "customer",
+    "email",
+    "phone",
+    "shippingAddress",
+    "billingAddress",
+    "address",
+    "requestPayload",
+    "variables",
+    "response",
+    "raw",
+    "payment",
+    "cartToken",
+    "browserIp",
+  ]);
+
+  const visit = (item) => {
+    if (!item || typeof item !== "object") return;
+    for (const [key, nested] of Object.entries(item)) {
+      assert.equal(blockedKeys.has(key), false, `sensitive key logged: ${key}`);
+      visit(nested);
+    }
+  };
+
+  visit(value);
 }

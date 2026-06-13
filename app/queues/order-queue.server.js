@@ -1,7 +1,8 @@
 import prisma from "../db.server.js";
 import { moveJobToDeadLetterQueue, appendRetryHistory } from "./dead-letter-queue.server.js";
 import { classifyFailure, getFailureMessage } from "../utils/failure-classifier.server.js";
-import { logFailureAudit, maskSensitivePayload } from "../utils/failure-audit-log.server.js";
+import { logFailureAudit } from "../utils/failure-audit-log.server.js";
+import { sanitizeOrderCreateQueuePayload } from "../utils/order-queue-job-payload.server.js";
 import { scheduleQueueHealthCheck } from "../services/monitoring/queue-health.server.js";
 import { recordMonitoringEvent, recordRetryMetric } from "../services/monitoring/monitoring-service.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
@@ -10,7 +11,7 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 const STALE_LOCK_MS = 10 * 60 * 1000;
 
 export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload, provider = "zinc" }) {
-  const maskedPayload = maskSensitivePayload(payload || {});
+  const safePayload = sanitizeOrderCreateQueuePayload(payload || {});
   const job = await prisma.orderQueueJob.upsert({
     where: {
       shop_type_shopifyOrderId: {
@@ -24,12 +25,12 @@ export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload,
       type: "order.create",
       shopifyOrderId,
       provider,
-      payload: JSON.stringify(maskedPayload),
+      payload: JSON.stringify(safePayload),
       maxAttempts: DEFAULT_MAX_ATTEMPTS,
     },
     update: {
       status: "pending",
-      payload: JSON.stringify(maskedPayload),
+      payload: JSON.stringify(safePayload),
       attempts: 0,
       lastError: null,
       retryHistory: null,
