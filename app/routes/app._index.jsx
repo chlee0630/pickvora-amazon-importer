@@ -1,9 +1,10 @@
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useLocation } from "react-router";
 import { btnStyle } from "../utils/btn";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { runNow } from "../services/scheduler.server";
+import { withEmbeddedAppContext } from "../utils/embedded-app-url";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -51,6 +52,8 @@ export const action = async ({ request }) => {
 export default function Dashboard() {
   const { stats, logs, schedulerConfig } = useLoaderData();
   const fetcher = useFetcher();
+  const location = useLocation();
+  const appHref = (path) => withEmbeddedAppContext(path, location.search);
   const isSyncing =
     fetcher.state !== "idle" && fetcher.formData?.get("intent") === "sync_all";
 
@@ -73,7 +76,7 @@ export default function Dashboard() {
             {isSyncing ? "⏳ 동기화 중..." : "Sync All Products"}
           </button>
         </fetcher.Form>
-        <s-button href="/app/import" variant="secondary">
+        <s-button href={appHref("/app/import")} variant="secondary">
           Import ASIN
         </s-button>
       </s-stack>
@@ -112,7 +115,7 @@ export default function Dashboard() {
 
         {(stats.warned > 0 || stats.blocked > 0) && (
           <div style={{ marginTop: "12px" }}>
-            <s-button href="/app/filters" variant="secondary">
+            <s-button href={appHref("/app/filters")} variant="secondary">
               저작권 위험 상품 확인하기 →
             </s-button>
           </div>
@@ -142,7 +145,7 @@ export default function Dashboard() {
         <s-paragraph>
           <s-text>Last run: {lastRun}</s-text>
         </s-paragraph>
-        <s-button href="/app/settings" variant="tertiary">
+        <s-button href={appHref("/app/settings")} variant="tertiary">
           Configure Scheduler
         </s-button>
       </s-section>

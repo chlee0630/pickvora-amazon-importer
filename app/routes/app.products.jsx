@@ -1,11 +1,12 @@
 /* eslint-disable react/prop-types */
 
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useLocation } from "react-router";
 import { btnStyle } from "../utils/btn";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { syncProduct } from "../services/amazon-sync.server";
+import { withEmbeddedAppContext } from "../utils/embedded-app-url";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -65,13 +66,15 @@ const STATUS_COLORS = {
 export default function ProductsPage() {
   const { products, total, page, limit } = useLoaderData();
   const fetcher = useFetcher();
+  const location = useLocation();
+  const appHref = (path) => withEmbeddedAppContext(path, location.search);
   const totalPages = Math.ceil(total / limit);
 
   const actionResult = fetcher.data;
 
   return (
     <s-page heading={`Imported Products (${total})`}>
-      <s-button slot="primary-action" href="/app/import" variant="primary">
+      <s-button slot="primary-action" href={appHref("/app/import")} variant="primary">
         Import ASIN
       </s-button>
 
@@ -87,7 +90,7 @@ export default function ProductsPage() {
           <s-stack direction="block" gap="base" style={{ padding: "40px", textAlign: "center" }}>
             <s-heading>No products imported yet</s-heading>
             <s-paragraph>Go to Import ASIN to start importing Amazon products.</s-paragraph>
-            <s-button href="/app/import" variant="primary">
+            <s-button href={appHref("/app/import")} variant="primary">
               Import Products
             </s-button>
           </s-stack>
@@ -228,7 +231,7 @@ export default function ProductsPage() {
         {totalPages > 1 && (
           <s-stack direction="inline" gap="base" style={{ marginTop: "16px", justifyContent: "center" }}>
             {page > 1 && (
-              <s-button href={`/app/products?page=${page - 1}`} variant="tertiary">
+              <s-button href={appHref(`/app/products?page=${page - 1}`)} variant="tertiary">
                 Previous
               </s-button>
             )}
@@ -236,7 +239,7 @@ export default function ProductsPage() {
               Page {page} of {totalPages}
             </s-text>
             {page < totalPages && (
-              <s-button href={`/app/products?page=${page + 1}`} variant="tertiary">
+              <s-button href={appHref(`/app/products?page=${page + 1}`)} variant="tertiary">
                 Next
               </s-button>
             )}
