@@ -19,6 +19,8 @@
 - Updated `app/services/amazon-sync.server.js` to import `fetchProductDetails` from the provider selector instead of directly from Rainforest.
 - Preserved `AMAZON_PRODUCT_PROVIDER=rainforest` rollback behavior.
 - Normalized EasyParser responses to the existing Rainforest-compatible `amazonData` shape used by downstream Shopify product creation logic.
+- Updated EasyParser payload detection so `result.detail` and nested `data.result.detail` are recognized before the broader `result` wrapper.
+- Fixed the development-store import failure that surfaced as `Product title not found for ASIN` when EasyParser returned the real `result.detail` response shape.
 
 ### Security
 
@@ -30,10 +32,12 @@
 ### Verified
 
 - `git diff --check` passed.
-- `npm test` passed with 71 tests.
+- `npm test` passed with 73 tests after adding real EasyParser wrapper coverage.
 - `npm run typecheck` passed.
 - `npm run build` passed.
 - EasyParser forbidden-pattern guard tests were added and passed.
+- EasyParser real response wrapper tests passed for `result.detail` and nested `data.result.detail`.
+- Development-store import on `pickvora-dev.myshopify.com` succeeded with ASIN `B0GJ74JDGK` using the EasyParser provider.
 
 ### Operational Notes
 
@@ -50,7 +54,7 @@ GET https://realtime.easyparser.com/v1/request
 
 - Production deployment has not been completed.
 - Production systemd EasyParser environment variables have not been added.
-- Development-store live API validation remains the next step before production rollout.
+- Development-store live API validation passed for ASIN `B0GJ74JDGK`; production rollout remains pending.
 - Rainforest rollback remains available with:
 
 ```text

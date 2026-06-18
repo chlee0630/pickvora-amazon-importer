@@ -405,6 +405,12 @@ EasyParser response handling:
 
 
 
+* Observed EasyParser top-level response keys are `request_info`, `request_parameters`, `request_metadata`, and `result`.
+
+* The actual product detail payload is under `result.detail`.
+
+* The normalizer also supports nested `data.result.detail` wrappers.
+
 * EasyParser responses are normalized to the existing Rainforest-compatible `amazonData` shape.
 
 * `EASYPARSER_API_KEY` and full request URLs must not be logged.
@@ -421,11 +427,13 @@ Current rollout status:
 
 * EasyParser provider commit: `bb15b81 Add EasyParser product provider`
 
+* Development-store import validation passed on `pickvora-dev.myshopify.com` with ASIN `B0GJ74JDGK`.
+
 * Production deployment has not been completed.
 
 * Production systemd EasyParser environment variables have not been added.
 
-* Development-store live API validation remains the next required step.
+* Production rollout remains the next required step after server environment preparation.
 
 
 

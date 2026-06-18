@@ -182,10 +182,11 @@ Rules:
 - `AMAZON_PRODUCT_PROVIDER=rainforest` must continue to roll back product detail lookup to Rainforest.
 - Do not log `EASYPARSER_API_KEY`, full EasyParser request URLs, or unredacted query strings containing `api_key`.
 - EasyParser responses must normalize to the existing Rainforest-compatible `amazonData` shape used by downstream import and Shopify product creation code.
+- Keep normalizer tests for EasyParser wrapper changes, including the observed `result.detail` and `data.result.detail` payload shapes.
 - Keep EasyParser ASIN Product Detail lookup independent from order, Zinc, Fraud Protection, and fulfillment flows.
 - Do not modify `.env` files when adding or changing EasyParser configuration.
 - Use systemd environment configuration for production deployment.
-- Complete development-store real API testing before production rollout.
+- Re-run development-store real API testing after EasyParser response-shape changes and before production rollout.
 
 EasyParser Product Detail request shape:
 
@@ -201,9 +202,9 @@ GET https://realtime.easyparser.com/v1/request
 Current EasyParser rollout status:
 
 - code exists on `feature/easyparser-provider-default`
+- development-store import validation passed for `pickvora-dev.myshopify.com` with ASIN `B0GJ74JDGK`
 - production deployment has not been completed
 - production systemd EasyParser env has not been added
-- development-store live API validation remains a required next step
 
 ## Required Validation
 
