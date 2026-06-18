@@ -1,7 +1,7 @@
 /* eslint-disable jsx-a11y/label-has-associated-control, react/no-unescaped-entities */
 
 import { useState } from "react";
-import { Form, useActionData, useNavigation, useLoaderData } from "react-router";
+import { Form, useActionData, useNavigation, useLoaderData, useLocation } from "react-router";
 import { btnStyle } from "../utils/btn";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
@@ -9,6 +9,7 @@ import prisma from "../db.server";
 import { importASINs } from "../services/amazon-sync.server";
 import { RISK_EMOJI, RISK_LABEL } from "../utils/filter-constants";
 import { getScalingConfig } from "../utils/scaling-config.server";
+import { withEmbeddedAppContext } from "../utils/embedded-app-url";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -62,6 +63,8 @@ export default function ImportPage() {
   const { defaultMargin } = useLoaderData();
   const actionData = useActionData();
   const navigation = useNavigation();
+  const location = useLocation();
+  const appHref = (path) => withEmbeddedAppContext(path, location.search);
   const isSubmitting = navigation.state === "submitting";
 
   const [asins, setAsins] = useState("");
@@ -238,12 +241,12 @@ export default function ImportPage() {
 
           <s-stack direction="inline" gap="base" style={{ marginTop: "16px" }}>
             {successCount + warnedCount > 0 && (
-              <s-button href="/app/products" variant="primary">
+              <s-button href={appHref("/app/products")} variant="primary">
                 등록된 상품 보기
               </s-button>
             )}
             {blockedCount > 0 && (
-              <s-button href="/app/filters?tab=blocked" variant="secondary">
+              <s-button href={appHref("/app/filters?tab=blocked")} variant="secondary">
                 차단 상품 목록 보기
               </s-button>
             )}
@@ -257,7 +260,7 @@ export default function ImportPage() {
           <s-list-item>상품 페이지 하단 "제품 정보" 섹션</s-list-item>
           <s-list-item>인기 상품 페이지에서 자동 수집</s-list-item>
         </s-unordered-list>
-        <s-button href="/app/popular" variant="tertiary">
+        <s-button href={appHref("/app/popular")} variant="tertiary">
           인기 상품 탐색
         </s-button>
       </s-section>
@@ -266,7 +269,7 @@ export default function ImportPage() {
         <s-paragraph>
           브랜드, 카테고리, 키워드 필터가 자동으로 저작권 위험 상품을 감지합니다.
         </s-paragraph>
-        <s-button href="/app/filters" variant="tertiary">
+        <s-button href={appHref("/app/filters")} variant="tertiary">
           필터 설정 관리
         </s-button>
       </s-section>

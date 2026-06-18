@@ -1,4 +1,4 @@
-import { Outlet, useLoaderData, useRouteError } from "react-router";
+import { Outlet, useLoaderData, useLocation, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
@@ -8,6 +8,7 @@ import { initOrderWorkers } from "../workers/order-worker.server";
 import { initFulfillmentUpdateWorkers } from "../workers/fulfillment-update-worker.server";
 import { initAnalyticsAggregation } from "../services/analytics/analytics-service.server";
 import { bootstrapTrackingPollingWorker } from "../utils/worker-bootstrap.server";
+import { withEmbeddedAppContext } from "../utils/embedded-app-url";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -35,17 +36,19 @@ export const loader = async ({ request }) => {
 
 export default function App() {
   const { apiKey } = useLoaderData();
+  const location = useLocation();
+  const appHref = (path) => withEmbeddedAppContext(path, location.search);
 
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app">Dashboard</s-link>
-        <s-link href="/app/operations">Operations</s-link>
-        <s-link href="/app/products">Products</s-link>
-        <s-link href="/app/import">Import ASIN</s-link>
-        <s-link href="/app/popular">Popular Products</s-link>
-        <s-link href="/app/filters">Copyright Filters</s-link>
-        <s-link href="/app/settings">Settings</s-link>
+        <s-link href={appHref("/app")}>Dashboard</s-link>
+        <s-link href={appHref("/app/operations")}>Operations</s-link>
+        <s-link href={appHref("/app/products")}>Products</s-link>
+        <s-link href={appHref("/app/import")}>Import ASIN</s-link>
+        <s-link href={appHref("/app/popular")}>Popular Products</s-link>
+        <s-link href={appHref("/app/filters")}>Copyright Filters</s-link>
+        <s-link href={appHref("/app/settings")}>Settings</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

@@ -1,5 +1,8 @@
 /* eslint-disable react/prop-types */
 
+import { useLocation } from "react-router";
+import { withEmbeddedAppContext } from "../utils/embedded-app-url";
+
 const cardStyle = {
   minWidth: "150px",
   flex: "1 1 150px",
@@ -92,6 +95,9 @@ export function HealthSummary({ health }) {
 }
 
 export function DashboardFilters({ filters }) {
+  const location = useLocation();
+  const appHref = (path) => withEmbeddedAppContext(path, location.search);
+
   return (
     <s-section heading="Filters">
       <form method="get">
@@ -133,7 +139,7 @@ export function DashboardFilters({ filters }) {
             <input name="to" type="date" defaultValue={dateInputValue(filters.to)} style={filterInputStyle} />
           </label>
           <button type="submit" style={buttonStyle}>Apply</button>
-          <s-button href="/app/operations" variant="tertiary">Reset</s-button>
+          <s-button href={appHref("/app/operations")} variant="tertiary">Reset</s-button>
         </s-stack>
       </form>
     </s-section>
@@ -176,12 +182,13 @@ export function DataTable({ columns, rows, emptyMessage }) {
 }
 
 export function PaginationControls({ filters, total }) {
+  const location = useLocation();
   const page = filters.page;
   const pageSize = filters.pageSize;
   const hasPrevious = page > 1;
   const hasNext = page * pageSize < total;
-  const previousHref = buildPageHref(filters, page - 1);
-  const nextHref = buildPageHref(filters, page + 1);
+  const previousHref = withEmbeddedAppContext(buildPageHref(filters, page - 1), location.search);
+  const nextHref = withEmbeddedAppContext(buildPageHref(filters, page + 1), location.search);
 
   return (
     <s-stack direction="inline" gap="base" style={{ justifyContent: "space-between", marginTop: "12px", flexWrap: "wrap" }}>
