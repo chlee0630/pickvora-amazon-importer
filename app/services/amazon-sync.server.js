@@ -1,5 +1,5 @@
 import prisma from "../db.server.js";
-import { fetchProductDetails } from "./rainforest.server.js";
+import { fetchProductDetails } from "./amazon-product-provider.server.js";
 import { checkProductFilter } from "./filter.server.js";
 import {
   createShopifyProduct,

@@ -1,3 +1,182 @@
+# Project Changelog
+
+## 2026-06-18
+
+### Added
+
+- Added EasyParser as a new Amazon product detail provider.
+- Added `app/services/amazon-product-provider.server.js` as the Amazon product data provider selector.
+- Added `app/services/easyparser.server.js` for EasyParser Product Detail requests.
+- Added `tests/easyparser-provider.test.js` for provider selection, request building, response normalization, rollback routing, and forbidden-pattern checks.
+- Added EasyParser scaling config defaults:
+  - `EASYPARSER_TIMEOUT_MS`
+  - `EASYPARSER_MAX_RETRIES`
+
+### Changed
+
+- Changed the default Amazon product detail provider to EasyParser.
+- Kept Rainforest API code in place as the legacy rollback provider.
+- Updated `app/services/amazon-sync.server.js` to import `fetchProductDetails` from the provider selector instead of directly from Rainforest.
+- Preserved `AMAZON_PRODUCT_PROVIDER=rainforest` rollback behavior.
+- Normalized EasyParser responses to the existing Rainforest-compatible `amazonData` shape used by downstream Shopify product creation logic.
+- Updated EasyParser payload detection so `result.detail` and nested `data.result.detail` are recognized before the broader `result` wrapper.
+- Fixed the development-store import failure that surfaced as `Product title not found for ASIN` when EasyParser returned the real `result.detail` response shape.
+
+### Security
+
+- Added redaction coverage to ensure EasyParser API keys are not exposed in error messages.
+- Avoided logging full EasyParser request URLs or raw query strings containing `api_key`.
+- Confirmed the EasyParser provider work does not change order, Zinc, Fraud Protection, or fulfillment logic.
+- Confirmed `.env`, Prisma schema, Shopify TOML, `package.json`, and `package-lock.json` were not changed.
+
+### Verified
+
+- `git diff --check` passed.
+- `npm test` passed with 73 tests after adding real EasyParser wrapper coverage.
+- `npm run typecheck` passed.
+- `npm run build` passed.
+- EasyParser forbidden-pattern guard tests were added and passed.
+- EasyParser real response wrapper tests passed for `result.detail` and nested `data.result.detail`.
+- Development-store import on `pickvora-dev.myshopify.com` succeeded with ASIN `B0GJ74JDGK` using the EasyParser provider.
+
+### Operational Notes
+
+- EasyParser Product Detail request structure:
+
+```text
+GET https://realtime.easyparser.com/v1/request
+  ?api_key=...
+  &platform=AMZ
+  &operation=DETAIL
+  &domain=.com
+  &asin=<ASIN>
+```
+
+- Production deployment has not been completed.
+- Production systemd EasyParser environment variables have not been added.
+- Development-store live API validation passed for ASIN `B0GJ74JDGK`; production rollout remains pending.
+- Rainforest rollback remains available with:
+
+```text
+AMAZON_PRODUCT_PROVIDER=rainforest
+```
+
+---
+
+## 2026-06-13
+
+### Added
+
+- Added production-safe fraud refund guard for `cmgpwd-ty.myshopify.com`.
+- Added guarded Shopify `orderCancel` refund support using `refundMethod.originalPaymentMethodsRefund=true`.
+- Added production refund eligibility checks for:
+  - production runtime
+  - exact production shop
+  - `FRAUD_ORDER_CANCEL_ENABLED=true`
+  - `FRAUD_ORDER_REFUND_ENABLED=true`
+  - live fraud config
+  - HIGH risk cancel decision
+  - Zinc block enabled
+  - no prior cancellation status
+  - `notifyCustomer=false`
+- Added `OrderWebhookLog.payload` allowlist sanitizer.
+- Added `OrderQueueJob.payload` allowlist sanitizer for `order.create`.
+- Added sanitizer tests for webhook log payloads and order queue job payloads.
+- Added production fraud refund tests for guarded refund behavior and blocked refund behavior.
+- Added systemd environment guard for:
+  - `pickvora-web`
+  - `pickvora-tracking-worker`
+
+### Changed
+
+- `order.create` queue jobs no longer persist raw Shopify webhook payloads.
+- Workers continue to fetch required order details through Shopify Admin API read-only queries instead of relying on sensitive queue payloads.
+- Fraud HIGH-risk orders now block Zinc submit before provider submission.
+- Fraud cancellation can restock inventory and refund the original payment method when production refund guards pass.
+- Fraud monitoring events use safe summary fields and keep `notifyCustomer=false`.
+
+### Security
+
+- Prevented storage of raw customer, address, payment, token, browser, and order status URL data in:
+  - `OrderWebhookLog.payload`
+  - `OrderQueueJob.payload`
+- Preserved `ProviderOrder.requestPayload=null` and `ProviderOrder.responsePayload=null` for HIGH fraud block paths.
+- Confirmed `refundCreate` is not used.
+- Confirmed fraud cancellation/refund does not set `notifyCustomer=true`.
+- Confirmed raw GraphQL variables are not persisted.
+
+### Verified
+
+Development E2E order `#1023` passed:
+
+- `webhookSafe=true`
+- `queueCreateSafe=true`
+- `assessmentCancelled=true`
+- `providerBlocked=true`
+- `cancelPollComplete=true`
+- `refundRequestedSafely=true`
+- `overallPass=true`
+
+Production deployment verified:
+
+- production branch: `prod-fraud-full-release`
+- production commit: `73a5355 Add production fraud refund guard and payload sanitizers`
+- server path: `/var/www/pickvora-amazon-importer`
+- `npm install` completed
+- `npm run typecheck` passed
+- `npm run build` passed
+- `pickvora-web` active
+- `pickvora-tracking-worker` active
+- systemd fraud env flags confirmed for both services
+- production config set to live fraud refund mode
+
+Final live production config:
+
+```text
+enabled=true
+dryRun=false
+autoCancelHighRisk=true
+autoCancelMediumRisk=false
+blockZincOnHighRisk=true
+restockInventory=true
+refundPayment=true
+notifyCustomer=false
+```
+
+### Operational Notes
+
+Expected production HIGH fraud flow:
+
+1. Zinc submit is blocked before provider submission.
+2. `ProviderOrder` is moved to `MANUAL_REVIEW`.
+3. Shopify `orderCancel` is requested.
+4. Inventory is restocked when eligible.
+5. Original payment method refund is requested.
+6. Customer notification remains disabled.
+7. `fraud.cancel.poll` confirms cancellation completion.
+
+Expected monitoring events:
+
+```text
+fraud_order_cancel_options_resolved
+fraud_order_cancel_request_prepared
+fraud_order_cancel_response_received
+fraud_order_cancel_requested
+fraud_order_cancel_confirmed
+```
+
+### Rollback
+
+Emergency rollback returns production config to dry-run and disables refund:
+
+```text
+dryRun=true
+refundPayment=false
+notifyCustomer=false
+```
+
+---
+
 # @shopify/shopify-app-template-react-router
 
 ## 2026.02.09

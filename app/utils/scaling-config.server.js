@@ -12,6 +12,8 @@ const CONFIG_DEFAULTS = {
   TRACKING_POLL_MAX_ATTEMPTS: { defaultValue: 24, min: 1, max: 100 },
   RAINFOREST_TIMEOUT_MS: { defaultValue: 15000, min: 1000, max: 60000 },
   RAINFOREST_MAX_RETRIES: { defaultValue: 3, min: 0, max: 5 },
+  EASYPARSER_TIMEOUT_MS: { defaultValue: 30000, min: 1000, max: 60000 },
+  EASYPARSER_MAX_RETRIES: { defaultValue: 3, min: 0, max: 5 },
   LOG_PAYLOAD_MAX_CHARS: { defaultValue: 5000, min: 500, max: 20000 },
 };
 
