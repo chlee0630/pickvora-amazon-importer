@@ -134,7 +134,18 @@ export function normalizeEasyParserProduct(data, requestedAsin) {
 
 function getProductPayload(data) {
   if (!data || typeof data !== "object") return null;
-  return data.product || data.result?.product || data.results?.product || data.data?.product || data.result || data.data;
+  return (
+    data.product ||
+    data.result?.product ||
+    data.result?.detail ||
+    data.results?.product ||
+    data.data?.product ||
+    data.data?.result?.product ||
+    data.data?.result?.detail ||
+    data.result ||
+    data.data ||
+    data
+  );
 }
 
 function getFirstObject(source, keys) {

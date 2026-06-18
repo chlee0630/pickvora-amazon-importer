@@ -108,6 +108,57 @@ test("EasyParser normalizer returns amazonData-compatible product shape", () => 
   ]);
 });
 
+test("EasyParser normalizer supports real result.detail wrapper", () => {
+  const normalized = normalizeEasyParserProduct({
+    request_info: {},
+    request_parameters: {},
+    request_metadata: {},
+    result: {
+      detail: {
+        asin: "B0GJ74JDGK",
+        title: "Example Product",
+        brand: "Example Brand",
+        buybox_winner: {
+          price: { currency: "USD", raw: "$69.99", symbol: "$", value: 69.99 },
+          availability: { raw: "In Stock", stock_data: 20 },
+        },
+        main_image: { link: "https://example.test/main.jpg" },
+        images: [{ link: "https://example.test/main.jpg" }],
+        link: "https://www.amazon.com/dp/B0GJ74JDGK",
+      },
+      delivered_to: {},
+    },
+  }, "B0GJ74JDGK");
+
+  assert.equal(normalized.asin, "B0GJ74JDGK");
+  assert.equal(normalized.title, "Example Product");
+  assert.equal(normalized.price, 69.99);
+  assert.equal(normalized.availabilityStatus, "in_stock");
+  assert.equal(normalized.mainImage, "https://example.test/main.jpg");
+});
+
+test("EasyParser normalizer supports nested data.result.detail wrapper", () => {
+  const normalized = normalizeEasyParserProduct({
+    data: {
+      result: {
+        detail: {
+          asin: "B0GJ74JDGK",
+          title: "Nested Example Product",
+          buybox_winner: {
+            price: { value: 69.99 },
+            availability: { raw: "In Stock" },
+          },
+        },
+      },
+    },
+  }, "B0GJ74JDGK");
+
+  assert.equal(normalized.asin, "B0GJ74JDGK");
+  assert.equal(normalized.title, "Nested Example Product");
+  assert.equal(normalized.price, 69.99);
+  assert.equal(normalized.availabilityStatus, "in_stock");
+});
+
 test("Amazon product provider defaults to EasyParser", () => {
   assert.equal(getAmazonProductProviderName({}), "easyparser");
   assert.equal(getAmazonProductProviderName({ AMAZON_PRODUCT_PROVIDER: "easyparser" }), "easyparser");
