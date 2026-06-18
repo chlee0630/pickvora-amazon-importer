@@ -58,7 +58,9 @@ Main goals:
 
 
 
-* Rainforest API
+* EasyParser API
+
+* Rainforest API legacy rollback provider
 
 * Zinc API
 
@@ -341,6 +343,103 @@ All providers should support:
 * getTracking()
 
 * cancelOrder()
+
+
+
+---
+
+
+
+# Amazon Product Data Provider Architecture
+
+
+
+Amazon product detail import now uses a provider selector separate from the order provider architecture.
+
+
+
+Current product data provider files:
+
+
+
+* `app/services/amazon-product-provider.server.js`
+
+* `app/services/easyparser.server.js`
+
+* `app/services/rainforest.server.js`
+
+
+
+Provider behavior:
+
+
+
+* EasyParser is the default Amazon product detail provider.
+
+* Rainforest remains in the codebase as a legacy rollback provider.
+
+* `AMAZON_PRODUCT_PROVIDER=rainforest` switches product detail lookup back to Rainforest.
+
+* `app/services/amazon-sync.server.js` imports `fetchProductDetails` only from the provider selector.
+
+* Downstream import and Shopify product creation code should not need to know which provider returned the data.
+
+
+
+EasyParser Product Detail request:
+
+
+
+```text
+GET https://realtime.easyparser.com/v1/request
+  ?api_key=...
+  &platform=AMZ
+  &operation=DETAIL
+  &domain=.com
+  &asin=<ASIN>
+```
+
+
+
+EasyParser response handling:
+
+
+
+* EasyParser responses are normalized to the existing Rainforest-compatible `amazonData` shape.
+
+* `EASYPARSER_API_KEY` and full request URLs must not be logged.
+
+* Product detail lookup is ASIN-based and isolated from order processing.
+
+
+
+Current rollout status:
+
+
+
+* Local feature branch: `feature/easyparser-provider-default`
+
+* EasyParser provider commit: `bb15b81 Add EasyParser product provider`
+
+* Production deployment has not been completed.
+
+* Production systemd EasyParser environment variables have not been added.
+
+* Development-store live API validation remains the next required step.
+
+
+
+Separation rules:
+
+
+
+* EasyParser product lookup must stay independent from Zinc order submission.
+
+* EasyParser product lookup must stay independent from Fraud Protection cancellation/refund logic.
+
+* EasyParser product lookup must stay independent from fulfillment and tracking workers.
+
+* Rainforest provider code must remain available for rollback.
 
 
 

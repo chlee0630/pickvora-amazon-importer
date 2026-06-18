@@ -1,5 +1,64 @@
 # Project Changelog
 
+## 2026-06-18
+
+### Added
+
+- Added EasyParser as a new Amazon product detail provider.
+- Added `app/services/amazon-product-provider.server.js` as the Amazon product data provider selector.
+- Added `app/services/easyparser.server.js` for EasyParser Product Detail requests.
+- Added `tests/easyparser-provider.test.js` for provider selection, request building, response normalization, rollback routing, and forbidden-pattern checks.
+- Added EasyParser scaling config defaults:
+  - `EASYPARSER_TIMEOUT_MS`
+  - `EASYPARSER_MAX_RETRIES`
+
+### Changed
+
+- Changed the default Amazon product detail provider to EasyParser.
+- Kept Rainforest API code in place as the legacy rollback provider.
+- Updated `app/services/amazon-sync.server.js` to import `fetchProductDetails` from the provider selector instead of directly from Rainforest.
+- Preserved `AMAZON_PRODUCT_PROVIDER=rainforest` rollback behavior.
+- Normalized EasyParser responses to the existing Rainforest-compatible `amazonData` shape used by downstream Shopify product creation logic.
+
+### Security
+
+- Added redaction coverage to ensure EasyParser API keys are not exposed in error messages.
+- Avoided logging full EasyParser request URLs or raw query strings containing `api_key`.
+- Confirmed the EasyParser provider work does not change order, Zinc, Fraud Protection, or fulfillment logic.
+- Confirmed `.env`, Prisma schema, Shopify TOML, `package.json`, and `package-lock.json` were not changed.
+
+### Verified
+
+- `git diff --check` passed.
+- `npm test` passed with 71 tests.
+- `npm run typecheck` passed.
+- `npm run build` passed.
+- EasyParser forbidden-pattern guard tests were added and passed.
+
+### Operational Notes
+
+- EasyParser Product Detail request structure:
+
+```text
+GET https://realtime.easyparser.com/v1/request
+  ?api_key=...
+  &platform=AMZ
+  &operation=DETAIL
+  &domain=.com
+  &asin=<ASIN>
+```
+
+- Production deployment has not been completed.
+- Production systemd EasyParser environment variables have not been added.
+- Development-store live API validation remains the next step before production rollout.
+- Rainforest rollback remains available with:
+
+```text
+AMAZON_PRODUCT_PROVIDER=rainforest
+```
+
+---
+
 ## 2026-06-13
 
 ### Added

@@ -162,6 +162,49 @@ secret
 
 Normal order workers must fetch required sensitive order details through Shopify Admin API read-only queries at processing time instead of relying on queue payload.
 
+## Amazon Product Provider Rules
+
+EasyParser is the default Amazon product detail provider as of local commit:
+
+- `bb15b81 Add EasyParser product provider`
+
+Provider files:
+
+- `app/services/amazon-product-provider.server.js`
+- `app/services/easyparser.server.js`
+- `app/services/rainforest.server.js`
+
+Rules:
+
+- Keep the provider selector structure in `amazon-product-provider.server.js`.
+- Do not delete `rainforest.server.js`; Rainforest remains the legacy rollback provider.
+- Default Amazon product detail lookup should use EasyParser.
+- `AMAZON_PRODUCT_PROVIDER=rainforest` must continue to roll back product detail lookup to Rainforest.
+- Do not log `EASYPARSER_API_KEY`, full EasyParser request URLs, or unredacted query strings containing `api_key`.
+- EasyParser responses must normalize to the existing Rainforest-compatible `amazonData` shape used by downstream import and Shopify product creation code.
+- Keep EasyParser ASIN Product Detail lookup independent from order, Zinc, Fraud Protection, and fulfillment flows.
+- Do not modify `.env` files when adding or changing EasyParser configuration.
+- Use systemd environment configuration for production deployment.
+- Complete development-store real API testing before production rollout.
+
+EasyParser Product Detail request shape:
+
+```text
+GET https://realtime.easyparser.com/v1/request
+  ?api_key=...
+  &platform=AMZ
+  &operation=DETAIL
+  &domain=.com
+  &asin=<ASIN>
+```
+
+Current EasyParser rollout status:
+
+- code exists on `feature/easyparser-provider-default`
+- production deployment has not been completed
+- production systemd EasyParser env has not been added
+- development-store live API validation remains a required next step
+
 ## Required Validation
 
 Before committing fraud/order/queue/security changes:
