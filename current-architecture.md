@@ -374,7 +374,7 @@ Provider behavior:
 
 
 
-* EasyParser is the default Amazon product detail provider.
+* EasyParser is the default Amazon product detail provider in production.
 
 * Rainforest remains in the codebase as a legacy rollback provider.
 
@@ -423,17 +423,48 @@ Current rollout status:
 
 
 
-* Local feature branch: `feature/easyparser-provider-default`
+* Production rollout completed on 2026-06-19.
+
+* Production branch: `prod-fraud-full-release`
+
+* Production server path: `/var/www/pickvora-amazon-importer`
+
+* Production store: `cmgpwd-ty.myshopify.com`
+
+* Production provider: `AMAZON_PRODUCT_PROVIDER=easyparser`
+
+* Production EasyParser environment:
+  * `EASYPARSER_API_KEY` configured, value intentionally not documented
+  * `EASYPARSER_DOMAIN=.com`
+  * `EASYPARSER_TIMEOUT_MS=30000`
+  * `EASYPARSER_MAX_RETRIES=3`
 
 * EasyParser provider commit: `bb15b81 Add EasyParser product provider`
 
 * Development-store import validation passed on `pickvora-dev.myshopify.com` with ASIN `B0GJ74JDGK`.
 
-* Production deployment has not been completed.
+* Production import validation passed on 2026-06-19.
 
-* Production systemd EasyParser environment variables have not been added.
+* Production verification summary: `{ synced: 3 }`
 
-* Production rollout remains the next required step after server environment preparation.
+* Verified production ASINs:
+  * `B0GJ74JDGK`
+  * `B0GVZ8QPQ5`
+  * `B0GJFSB7PV`
+
+* Verified products had `syncStatus=synced`, `syncError=null`, and generated Shopify product and variant IDs.
+
+* `/app/import.data` returned `POST 200`.
+
+* `shopify_review_metafields_updated` logs were observed.
+
+* No raw EasyParser `api_key` value was observed in logs.
+
+* Some pre-2026-06-10 AmazonProduct rows may still have historical `syncStatus=error` values from Shopify API 401 token/auth failures.
+
+* Historical error products are not evidence of EasyParser production rollout failure and should be resynced only in a separate approved operation.
+
+* Large-scale registration remains on hold; next step is 10-item batches followed by 24-hour observation.
 
 
 
@@ -448,6 +479,118 @@ Separation rules:
 * EasyParser product lookup must stay independent from fulfillment and tracking workers.
 
 * Rainforest provider code must remain available for rollback.
+
+
+
+---
+
+
+
+# Production Shopify Auth and Session Architecture
+
+
+
+## 2026-06-19 Production 401 Incident
+
+
+
+Observed symptoms:
+
+
+
+* Dashboard, Operations, Products, and Import pages returned `401 Unauthorized`.
+
+* Reinstalling did not create a new offline Session row.
+
+* `/auth/session-token` returned 200 while `/app` still returned 401.
+
+* Logs included `Authenticating admin request` with no shop context in failing app requests.
+
+
+
+Confirmed primary cause:
+
+
+
+* Production server time/NTP was not synchronized.
+
+* `timedatectl` showed `System clock synchronized: no`.
+
+* `timedatectl timesync-status` showed `Packet count: 0`.
+
+* NTP requests to `ntp.ubuntu.com:123` timed out.
+
+* Shopify `id_token` and session-token verification is time-sensitive, so clock drift can prevent offline session creation.
+
+
+
+Related configuration issue:
+
+
+
+* Production `.env` `SCOPES` did not match `shopify.app.production.toml`.
+
+* Scopes were aligned to include required order and inventory scopes.
+
+* Reauth through `/auth?shop=cmgpwd-ty.myshopify.com` was confirmed to target the production shop.
+
+* Earlier logs had shown reauth flowing to the wrong shop, which must be treated as a deployment/configuration warning sign.
+
+
+
+Resolution:
+
+
+
+* Server time was temporarily corrected against an HTTPS `Date` reference.
+
+* NTP was re-enabled.
+
+* `timedatectl` later showed `System clock synchronized: yes`.
+
+* `NTP service: active` and increasing packet count confirmed long-term sync recovery.
+
+* App reauthentication created a new offline session.
+
+* Session expiration recovery was verified:
+  * `No valid session found`
+  * `Requesting offline access token`
+  * `Creating new session`
+  * `/app 200`
+
+
+
+Current status:
+
+
+
+* Production app authentication 401 issue is resolved.
+
+* NTP long-term synchronization is normal.
+
+* Session expiration automatic reissue is working.
+
+* Dashboard, Products, Import ASIN, and Operations menus are normal.
+
+
+
+Operational rules:
+
+
+
+* If 401 returns, check `timedatectl status` and `timedatectl timesync-status` before reinstalling or changing code.
+
+* Keep outbound UDP 123 allowed so NTP remains healthy.
+
+* Mask `id_token`, `hmac`, session identifiers, `shopify-reload`, `api_key`, tokens, and secrets in shared logs.
+
+* Do not repeat app reinstalls, code rollbacks, or DB session deletion loops before resolving server time/NTP.
+
+* Do not perform production DB writes without a backup.
+
+* The production app uninstall webhook currently deletes Session rows only.
+
+* Always take a DB backup before production app reinstall.
 
 
 

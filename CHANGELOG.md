@@ -1,5 +1,58 @@
 # Project Changelog
 
+## 2026-06-19
+
+### Added
+
+- Documented completed EasyParser production rollout on `prod-fraud-full-release`.
+- Documented production Shopify authentication 401 runbook focused on server time/NTP checks.
+- Documented production EasyParser import verification results for:
+  - `B0GJ74JDGK`
+  - `B0GVZ8QPQ5`
+  - `B0GJFSB7PV`
+
+### Changed
+
+- Production Amazon product detail lookup now runs with `AMAZON_PRODUCT_PROVIDER=easyparser`.
+- Production EasyParser runtime configuration is documented as:
+  - `EASYPARSER_API_KEY` configured, value intentionally omitted
+  - `EASYPARSER_DOMAIN=.com`
+  - `EASYPARSER_TIMEOUT_MS=30000`
+  - `EASYPARSER_MAX_RETRIES=3`
+- Rainforest remains documented as the rollback provider through `AMAZON_PRODUCT_PROVIDER=rainforest`.
+- Updated the operational interpretation of older `syncStatus=error` products with `Shopify API 401: Invalid API key or access token` as historical Shopify auth/token failures, not EasyParser rollout failures.
+
+### Security
+
+- Confirmed EasyParser API key values are not written to docs.
+- Confirmed raw `id_token`, `hmac`, session values, `shopify-reload`, API keys, tokens, customer data, address data, payment data, and browser payloads must be masked before log sharing.
+- Confirmed no DB writes, Shopify mutations, order actions, refunds, cancellations, or fulfillment actions are part of this documentation update.
+
+### Verified
+
+- EasyParser production import verification passed on 2026-06-19.
+- Production import summary was `{ synced: 3 }`.
+- Each verified product had `syncStatus=synced`, `syncError=null`, and generated Shopify product and variant IDs.
+- `/app/import.data` returned `POST 200` during production import verification.
+- `shopify_review_metafields_updated` logs were observed.
+- No raw EasyParser `api_key` value was observed in logs.
+- Dashboard, Products, Import ASIN, and Operations menus were normal after the auth fix.
+- Session expiration recovery was verified through the flow: `No valid session found` -> `Requesting offline access token` -> `Creating new session` -> `/app 200`.
+
+### Operational Notes
+
+- The production 401 incident was traced primarily to server time/NTP drift.
+- During diagnosis, `timedatectl` showed `System clock synchronized: no`, `Packet count: 0`, and `ntp.ubuntu.com:123` timeout behavior.
+- Shopify `id_token` and session-token verification is time-sensitive, so server clock drift can prevent session creation.
+- The server time was temporarily corrected against an HTTPS `Date` reference, then NTP was re-enabled.
+- NTP recovery was confirmed with `System clock synchronized: yes`, `NTP service: active`, and increasing packet count.
+- Production `.env` `SCOPES` were also aligned with `shopify.app.production.toml`, including order and inventory scopes required by the app.
+- Reauth through `/auth?shop=cmgpwd-ty.myshopify.com` was confirmed to target the production shop.
+- `/owa/auth/x.js` and `/api/merge` 404s are treated as external bot/scanner requests unless correlated with app behavior.
+- Large-scale registration remains on hold. Next step is 10-item batches followed by 24-hour observation.
+
+---
+
 ## 2026-06-18
 
 ### Added

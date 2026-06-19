@@ -201,10 +201,38 @@ GET https://realtime.easyparser.com/v1/request
 
 Current EasyParser rollout status:
 
-- code exists on `feature/easyparser-provider-default`
+- production rollout completed on 2026-06-19
+- production branch is `prod-fraud-full-release`
+- production server path is `/var/www/pickvora-amazon-importer`
+- production store is `cmgpwd-ty.myshopify.com`
+- production uses `AMAZON_PRODUCT_PROVIDER=easyparser`
+- production has `EASYPARSER_API_KEY` configured, but the key value must never be written to docs or logs
+- production uses `EASYPARSER_DOMAIN=.com`, `EASYPARSER_TIMEOUT_MS=30000`, and `EASYPARSER_MAX_RETRIES=3`
 - development-store import validation passed for `pickvora-dev.myshopify.com` with ASIN `B0GJ74JDGK`
-- production deployment has not been completed
-- production systemd EasyParser env has not been added
+- production import validation passed for ASINs `B0GJ74JDGK`, `B0GVZ8QPQ5`, and `B0GJFSB7PV`
+- Rainforest remains available through `AMAZON_PRODUCT_PROVIDER=rainforest`
+- pre-2026-06-10 `syncStatus=error` products with Shopify API 401 errors are historical auth/token failures, not EasyParser rollout failures
+- do not retry historical error products or write DB changes during documentation-only work
+
+## Production Shopify Auth 401 Guard
+
+If production returns `401 Unauthorized`, check these before reinstalling the app or changing code:
+
+1. `timedatectl status`
+2. `timedatectl timesync-status`
+3. Session table state
+4. `.env` `SCOPES` alignment with `shopify.app.production.toml` scopes
+5. `/auth?shop=cmgpwd-ty.myshopify.com` reauth flow targets the production shop
+
+Rules:
+
+- If `timedatectl` shows `System clock synchronized: no`, Shopify `id_token` and session-token validation can fail.
+- Do not repeat app reinstalls, code rollbacks, or DB session deletion loops before fixing NTP/time synchronization.
+- Keep outbound UDP 123 available for NTP on the VPS/network firewall.
+- Mask `id_token`, `hmac`, session identifiers, `shopify-reload`, `api_key`, tokens, and secrets before sharing logs.
+- Do not write production DB changes without a backup.
+- The production app uninstall webhook currently deletes Session records only.
+- Before reinstalling the production app, take a DB backup first.
 
 ## Required Validation
 
