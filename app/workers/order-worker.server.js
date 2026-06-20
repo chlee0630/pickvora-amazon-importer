@@ -114,7 +114,7 @@ async function processCreateOrderJob(job) {
     return;
   }
 
-  if (shouldSkipZincOrderSubmission(existingProviderOrder)) {
+  if (shouldSkipProviderOrderSubmission(existingProviderOrder)) {
     if (existingProviderOrder?.providerOrderId) {
       logProviderEvent("duplicate_provider_order_prevented", {
         shop: job.shop,
@@ -203,7 +203,7 @@ async function processCreateOrderJob(job) {
     accessToken: session.accessToken,
     shopifyOrderId: order.id || job.shopifyOrderId,
   });
-  const shouldBlockForFraud = selected.providerName === "zinc" && shouldBlockZincForFraud(fraudAssessment);
+  const shouldBlockForFraud = shouldBlockProviderForFraud(fraudAssessment);
 
   try {
     await handleFraudOrderCancellation({
@@ -667,6 +667,10 @@ export async function runFraudAssessmentForOrder({ job, accessToken, shopifyOrde
 }
 
 export function shouldSkipZincOrderSubmission(providerOrder) {
+  return shouldSkipProviderOrderSubmission(providerOrder);
+}
+
+export function shouldSkipProviderOrderSubmission(providerOrder) {
   return Boolean(providerOrder?.providerOrderId || providerOrder?.requestPayload);
 }
 
@@ -675,6 +679,10 @@ export function isDryRunProviderSubmission(result) {
 }
 
 export function shouldBlockZincForFraud(fraudAssessment) {
+  return shouldBlockProviderForFraud(fraudAssessment);
+}
+
+export function shouldBlockProviderForFraud(fraudAssessment) {
   if (fraudAssessment?.skipped) return false;
   const result = fraudAssessment?.result;
   const config = result?.config;
@@ -694,11 +702,12 @@ export function isFraudBlockedProviderOrder(providerOrder) {
 }
 
 export function buildFraudBlockedProviderUpdate() {
-  const message = "Blocked before Zinc submit due to HIGH fraud risk";
+  const message = "Blocked before provider submit due to HIGH fraud risk";
   return {
     status: "MANUAL_REVIEW",
     providerOrderId: null,
     requestPayload: null,
+    responsePayload: null,
     lastError: message,
     providerFailureCode: "FRAUD_HIGH_RISK",
     providerFailureMessage: message,

@@ -8,13 +8,15 @@ import {
   isFraudBlockedProviderOrder,
   isDryRunProviderSubmission,
   runFraudAssessmentForOrder,
+  shouldBlockProviderForFraud,
   shouldBlockZincForFraud,
+  shouldSkipProviderOrderSubmission,
   shouldSkipZincOrderSubmission,
 } from "../app/workers/order-worker.server.js";
 
-test("shouldSkipZincOrderSubmission returns true when providerOrderId already exists", () => {
+test("shouldSkipProviderOrderSubmission returns true when providerOrderId already exists", () => {
   assert.equal(
-    shouldSkipZincOrderSubmission({
+    shouldSkipProviderOrderSubmission({
       providerOrderId: "zinc-123",
       requestPayload: null,
     }),
@@ -22,9 +24,9 @@ test("shouldSkipZincOrderSubmission returns true when providerOrderId already ex
   );
 });
 
-test("shouldSkipZincOrderSubmission returns true when submit intent already exists", () => {
+test("shouldSkipProviderOrderSubmission returns true when submit intent already exists", () => {
   assert.equal(
-    shouldSkipZincOrderSubmission({
+    shouldSkipProviderOrderSubmission({
       providerOrderId: null,
       requestPayload: "{\"idempotency_key\":\"example.myshopify.com:gid://shopify/Order/123:zinc:create\"}",
     }),
@@ -32,8 +34,12 @@ test("shouldSkipZincOrderSubmission returns true when submit intent already exis
   );
 });
 
-test("shouldSkipZincOrderSubmission returns false for a fresh order", () => {
-  assert.equal(shouldSkipZincOrderSubmission({ providerOrderId: null, requestPayload: null }), false);
+test("shouldSkipProviderOrderSubmission returns false for a fresh order", () => {
+  assert.equal(shouldSkipProviderOrderSubmission({ providerOrderId: null, requestPayload: null }), false);
+});
+
+test("shouldSkipZincOrderSubmission remains a compatibility alias", () => {
+  assert.equal(shouldSkipZincOrderSubmission({ providerOrderId: "zinc-123", requestPayload: null }), true);
 });
 
 test("isDryRunProviderSubmission returns true for dry-run results", () => {
@@ -156,7 +162,7 @@ test("runFraudAssessmentForOrder treats fraud assessment failures as non-blockin
   assert.match(errors[0].join(" "), /fraud_assessment_failed_non_blocking/);
 });
 
-test("shouldBlockZincForFraud blocks only HIGH risk when explicit Zinc block flag is enabled", () => {
+test("shouldBlockProviderForFraud blocks only HIGH risk when explicit provider block flag is enabled", () => {
   const config = {
     enabled: true,
     dryRun: true,
@@ -164,7 +170,7 @@ test("shouldBlockZincForFraud blocks only HIGH risk when explicit Zinc block fla
     blockZincOnHighRisk: true,
   };
 
-  assert.equal(shouldBlockZincForFraud({
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config,
@@ -173,7 +179,7 @@ test("shouldBlockZincForFraud blocks only HIGH risk when explicit Zinc block fla
       assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), true);
-  assert.equal(shouldBlockZincForFraud({
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config,
@@ -182,7 +188,7 @@ test("shouldBlockZincForFraud blocks only HIGH risk when explicit Zinc block fla
       assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), false);
-  assert.equal(shouldBlockZincForFraud({
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config,
@@ -193,8 +199,8 @@ test("shouldBlockZincForFraud blocks only HIGH risk when explicit Zinc block fla
   }), true);
 });
 
-test("shouldBlockZincForFraud does not require a WOULD_CANCEL dry-run decision when explicit flag is enabled", () => {
-  assert.equal(shouldBlockZincForFraud({
+test("shouldBlockProviderForFraud does not require a WOULD_CANCEL dry-run decision when explicit flag is enabled", () => {
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config: {
@@ -210,9 +216,9 @@ test("shouldBlockZincForFraud does not require a WOULD_CANCEL dry-run decision w
   }), true);
 });
 
-test("shouldBlockZincForFraud keeps existing flow unless explicit Zinc block flag is enabled", () => {
-  assert.equal(shouldBlockZincForFraud({ skipped: true, reason: "assessment_failed" }), false);
-  assert.equal(shouldBlockZincForFraud({
+test("shouldBlockProviderForFraud keeps existing flow unless explicit provider block flag is enabled", () => {
+  assert.equal(shouldBlockProviderForFraud({ skipped: true, reason: "assessment_failed" }), false);
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config: { enabled: false, dryRun: true, autoCancelHighRisk: true },
@@ -221,7 +227,7 @@ test("shouldBlockZincForFraud keeps existing flow unless explicit Zinc block fla
       assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), false);
-  assert.equal(shouldBlockZincForFraud({
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config: { enabled: true, dryRun: false, autoCancelHighRisk: true, blockZincOnHighRisk: false },
@@ -230,7 +236,7 @@ test("shouldBlockZincForFraud keeps existing flow unless explicit Zinc block fla
       assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), false);
-  assert.equal(shouldBlockZincForFraud({
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config: { enabled: true, dryRun: true, autoCancelHighRisk: false, blockZincOnHighRisk: false },
@@ -239,7 +245,7 @@ test("shouldBlockZincForFraud keeps existing flow unless explicit Zinc block fla
       assessment: { shopifyOrderId: "gid://shopify/Order/123" },
     },
   }), false);
-  assert.equal(shouldBlockZincForFraud({
+  assert.equal(shouldBlockProviderForFraud({
     skipped: false,
     result: {
       config: { enabled: true, dryRun: true, autoCancelHighRisk: true, blockZincOnHighRisk: false },
@@ -250,14 +256,25 @@ test("shouldBlockZincForFraud keeps existing flow unless explicit Zinc block fla
   }), false);
 });
 
-test("buildFraudBlockedProviderUpdate records manual review without Zinc submit payload", () => {
+test("shouldBlockProviderForFraud blocks PriceYak submit under the same HIGH risk block rules", () => {
+  const fraudAssessment = buildHighRiskBlockAssessment();
+  assert.equal(shouldBlockProviderForFraud(fraudAssessment), true);
+  assert.equal(shouldBlockProviderForFraud({ ...fraudAssessment, providerName: "priceyak" }), true);
+});
+
+test("shouldBlockZincForFraud remains a compatibility alias", () => {
+  assert.equal(shouldBlockZincForFraud(buildHighRiskBlockAssessment()), true);
+});
+
+test("buildFraudBlockedProviderUpdate records manual review without provider submit payload", () => {
   assert.deepEqual(buildFraudBlockedProviderUpdate(), {
     status: "MANUAL_REVIEW",
     providerOrderId: null,
     requestPayload: null,
-    lastError: "Blocked before Zinc submit due to HIGH fraud risk",
+    responsePayload: null,
+    lastError: "Blocked before provider submit due to HIGH fraud risk",
     providerFailureCode: "FRAUD_HIGH_RISK",
-    providerFailureMessage: "Blocked before Zinc submit due to HIGH fraud risk",
+    providerFailureMessage: "Blocked before provider submit due to HIGH fraud risk",
   });
 });
 
@@ -285,5 +302,22 @@ function buildOrderJob(overrides = {}) {
     provider: "zinc",
     attempts: 0,
     ...overrides,
+  };
+}
+
+function buildHighRiskBlockAssessment() {
+  return {
+    skipped: false,
+    result: {
+      config: {
+        enabled: true,
+        dryRun: true,
+        autoCancelHighRisk: true,
+        blockZincOnHighRisk: true,
+      },
+      riskLevel: "HIGH",
+      decision: "WOULD_CANCEL",
+      assessment: { shopifyOrderId: "gid://shopify/Order/123" },
+    },
   };
 }
