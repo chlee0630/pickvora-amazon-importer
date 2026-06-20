@@ -12,23 +12,36 @@ const FULFILLMENT_LOCK_TTL_MS = 10 * 60 * 1000;
 
 class PermanentFulfillmentError extends Error {}
 
-export async function processFulfillmentJob(job) {
+export async function processFulfillmentJob(job, deps = {}) {
   let providerOrder = null;
+  const acquireFulfillmentLockFn = deps.acquireFulfillmentLock || acquireFulfillmentLock;
+  const findExistingFulfillmentLogFn = deps.findExistingFulfillmentLog || findExistingFulfillmentLog;
+  const getOfflineSessionFn = deps.getOfflineSession || getOfflineSession;
+  const fetchFulfillmentContextFn = deps.fetchFulfillmentContext || fetchFulfillmentContext;
+  const hasMatchingFulfillmentFn = deps.hasMatchingFulfillment || hasMatchingFulfillment;
+  const buildFulfillmentInputFn = deps.buildFulfillmentInput || buildFulfillmentInput;
+  const createTrackingFulfillmentFn = deps.createTrackingFulfillment || createTrackingFulfillment;
+  const saveFulfillmentLogFn = deps.saveFulfillmentLog || saveFulfillmentLog;
+  const markProviderOrderFulfilledFn = deps.markProviderOrderFulfilled || markProviderOrderFulfilled;
+  const recordFulfillmentMetricFn = deps.recordFulfillmentMetric || recordFulfillmentMetric;
+  const logFulfillmentEventFn = deps.logFulfillmentEvent || logFulfillmentEvent;
+  const releaseFulfillmentLockFn = deps.releaseFulfillmentLock || releaseFulfillmentLock;
+
   try {
     const payload = parseJobPayload(job);
     const tracking = sanitizeTracking(payload);
     validateTracking(tracking);
 
-    providerOrder = await acquireFulfillmentLock(job);
+    providerOrder = await acquireFulfillmentLockFn(job);
     if (!providerOrder) {
       throw retryableError("Fulfillment lock is held by another worker", "LOCKED");
     }
 
     validateProviderOrder(providerOrder, tracking);
 
-    const existingLog = await findExistingFulfillmentLog(job, tracking);
+    const existingLog = await findExistingFulfillmentLogFn(job, tracking);
     if (existingLog) {
-      recordFulfillmentMetric("fulfillment_duplicate_prevented", {
+      recordFulfillmentMetricFn("fulfillment_duplicate_prevented", {
         jobId: job.id,
         shop: job.shop,
         type: job.type,
@@ -36,21 +49,21 @@ export async function processFulfillmentJob(job) {
         provider: job.provider,
         source: "local_log",
       });
-      logFulfillmentEvent("fulfillment_duplicate_log_skipped", job, {
+      logFulfillmentEventFn("fulfillment_duplicate_log_skipped", job, {
         trackingNumber: maskTrackingNumber(tracking.trackingNumber),
         carrier: tracking.carrier,
         fulfillmentId: existingLog.shopifyFulfillmentId,
       });
-      await markProviderOrderFulfilled(providerOrder.id, existingLog.shopifyFulfillmentId);
+      await markProviderOrderFulfilledFn(providerOrder.id, existingLog.shopifyFulfillmentId);
       return;
     }
 
-    const session = await getOfflineSession(job.shop);
-    const order = await fetchFulfillmentContext(job.shop, session.accessToken, job.shopifyOrderId);
+    const session = await getOfflineSessionFn(job.shop);
+    const order = await fetchFulfillmentContextFn(job.shop, session.accessToken, job.shopifyOrderId);
     if (!order) throw new PermanentFulfillmentError("Shopify order not found");
 
-    if (hasMatchingFulfillment(order, tracking)) {
-      recordFulfillmentMetric("fulfillment_duplicate_prevented", {
+    if (hasMatchingFulfillmentFn(order, tracking)) {
+      recordFulfillmentMetricFn("fulfillment_duplicate_prevented", {
         jobId: job.id,
         shop: job.shop,
         type: job.type,
@@ -58,28 +71,28 @@ export async function processFulfillmentJob(job) {
         provider: job.provider,
         source: "shopify",
       });
-      await saveFulfillmentLog(job, providerOrder, tracking, {
+      await saveFulfillmentLogFn(job, providerOrder, tracking, {
         status: "duplicate",
         message: "Matching Shopify fulfillment already exists",
       });
-      await markProviderOrderFulfilled(providerOrder.id, null);
-      logFulfillmentEvent("fulfillment_duplicate_shopify_skipped", job, {
+      await markProviderOrderFulfilledFn(providerOrder.id, null);
+      logFulfillmentEventFn("fulfillment_duplicate_shopify_skipped", job, {
         trackingNumber: maskTrackingNumber(tracking.trackingNumber),
         carrier: tracking.carrier,
       });
       return;
     }
 
-    const fulfillmentInput = buildFulfillmentInput(order, tracking);
-    logFulfillmentEvent("fulfillment_request", job, {
+    const fulfillmentInput = buildFulfillmentInputFn(order, tracking);
+    logFulfillmentEventFn("fulfillment_request", job, {
       trackingNumber: maskTrackingNumber(tracking.trackingNumber),
       carrier: tracking.carrier,
     });
 
-    const result = await createTrackingFulfillment(job.shop, session.accessToken, fulfillmentInput);
+    const result = await createTrackingFulfillmentFn(job.shop, session.accessToken, fulfillmentInput);
     const fulfillmentId = result.fulfillment?.id || null;
 
-    await saveFulfillmentLog(job, providerOrder, tracking, {
+    await saveFulfillmentLogFn(job, providerOrder, tracking, {
       status: "success",
       shopifyFulfillmentId: fulfillmentId,
       requestPayload: fulfillmentInput,
@@ -87,8 +100,8 @@ export async function processFulfillmentJob(job) {
       message: "Shopify fulfillment created",
     });
 
-    await markProviderOrderFulfilled(providerOrder.id, fulfillmentId);
-    recordFulfillmentMetric("fulfillment_success", {
+    await markProviderOrderFulfilledFn(providerOrder.id, fulfillmentId);
+    recordFulfillmentMetricFn("fulfillment_success", {
       jobId: job.id,
       shop: job.shop,
       type: job.type,
@@ -97,14 +110,14 @@ export async function processFulfillmentJob(job) {
       fulfillmentId,
     });
 
-    logFulfillmentEvent("fulfillment_response", job, {
+    logFulfillmentEventFn("fulfillment_response", job, {
       trackingNumber: maskTrackingNumber(tracking.trackingNumber),
       carrier: tracking.carrier,
       fulfillmentId,
     });
   } catch (error) {
     if (providerOrder && !providerOrder.fulfillmentSyncedAt) {
-      await releaseFulfillmentLock(job, error);
+      await releaseFulfillmentLockFn(job, error);
     }
     throw error;
   }
