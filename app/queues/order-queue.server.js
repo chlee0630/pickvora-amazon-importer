@@ -6,13 +6,18 @@ import { sanitizeOrderCreateQueuePayload } from "../utils/order-queue-job-payloa
 import { scheduleQueueHealthCheck } from "../services/monitoring/queue-health.server.js";
 import { recordMonitoringEvent, recordRetryMetric } from "../services/monitoring/monitoring-service.server.js";
 import { getScalingConfig } from "../utils/scaling-config.server.js";
+import { getConfiguredOrderProviderName, getOrderProvider } from "../services/order-providers/index.server.js";
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 const STALE_LOCK_MS = 10 * 60 * 1000;
 
-export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload, provider = "zinc" }) {
+export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload, provider }, deps = {}) {
+  const prismaClient = deps.prismaClient || prisma;
+  const scheduleOrderWorkerRunFn = deps.scheduleOrderWorkerRun || scheduleOrderWorkerRun;
+  const scheduleQueueHealthCheckFn = deps.scheduleQueueHealthCheck || scheduleQueueHealthCheck;
+  const selectedProvider = resolveOrderProcessingProvider(provider, deps.env || process.env);
   const safePayload = sanitizeOrderCreateQueuePayload(payload || {});
-  const job = await prisma.orderQueueJob.upsert({
+  const job = await prismaClient.orderQueueJob.upsert({
     where: {
       shop_type_shopifyOrderId: {
         shop,
@@ -24,7 +29,7 @@ export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload,
       shop,
       type: "order.create",
       shopifyOrderId,
-      provider,
+      provider: selectedProvider,
       payload: JSON.stringify(safePayload),
       maxAttempts: DEFAULT_MAX_ATTEMPTS,
     },
@@ -42,9 +47,18 @@ export async function enqueueOrderProcessingJob({ shop, shopifyOrderId, payload,
     },
   });
 
-  scheduleOrderWorkerRun();
-  scheduleQueueHealthCheck();
+  scheduleOrderWorkerRunFn();
+  scheduleQueueHealthCheckFn();
   return job;
+}
+
+export function resolveOrderProcessingProvider(provider, env = process.env) {
+  const explicitProvider = String(provider || "").trim().toLowerCase();
+  if (explicitProvider) {
+    getOrderProvider(explicitProvider);
+    return explicitProvider;
+  }
+  return getConfiguredOrderProviderName(env);
 }
 
 export async function enqueueTrackingPollJob({

@@ -90,7 +90,6 @@ export const action = async ({ request }) => {
     shop,
     shopifyOrderId,
     payload,
-    provider: "zinc",
   });
 
   return new Response();
