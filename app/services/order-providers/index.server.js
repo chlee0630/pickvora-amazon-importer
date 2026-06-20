@@ -1,16 +1,20 @@
 import { createZincProvider } from "./zinc.server.js";
+import { createPriceYakProvider } from "./priceyak.server.js";
 import { getProviderHealth } from "./provider-health.server.js";
 import { logProviderEvent } from "../../utils/provider-errors.server.js";
 
 const providers = {
+  priceyak: createPriceYakProvider,
   zinc: createZincProvider,
 };
 
-const PRIMARY_PROVIDER = "zinc";
+const DEFAULT_ORDER_PROVIDER = "zinc";
+const ORDER_PROVIDER_ENV = "ORDER_PROVIDER";
 
-export function getOrderProvider(providerName = "zinc") {
-  const createProvider = providers[providerName];
-  if (!createProvider) throw new Error(`Unsupported order provider: ${providerName}`);
+export function getOrderProvider(providerName = DEFAULT_ORDER_PROVIDER) {
+  const normalizedProviderName = normalizeProviderName(providerName) || DEFAULT_ORDER_PROVIDER;
+  const createProvider = providers[normalizedProviderName];
+  if (!createProvider) throw new Error(`Unsupported order provider: ${normalizedProviderName}`);
   return createProvider();
 }
 
@@ -18,20 +22,27 @@ export function listOrderProviderNames() {
   return Object.keys(providers);
 }
 
-export async function resolveOrderProvider({ preferredProvider = PRIMARY_PROVIDER } = {}) {
-  const providerNames = uniqueProviderNames([preferredProvider, PRIMARY_PROVIDER, ...listOrderProviderNames()]);
+export function getConfiguredOrderProviderName(env = process.env) {
+  const providerName = normalizeProviderName(env?.[ORDER_PROVIDER_ENV]) || DEFAULT_ORDER_PROVIDER;
+  assertSupportedProvider(providerName);
+  return providerName;
+}
+
+export async function resolveOrderProvider({ preferredProvider } = {}, deps = {}) {
+  const getProviderHealthFn = deps.getProviderHealth || getProviderHealth;
+  const logProviderEventFn = deps.logProviderEvent || logProviderEvent;
+  const primaryProvider = getConfiguredOrderProviderName(deps.env || process.env);
+  const requestedProvider = normalizeProviderName(preferredProvider) || primaryProvider;
+  assertSupportedProvider(requestedProvider);
+
+  const providerNames = uniqueProviderNames([requestedProvider, primaryProvider, DEFAULT_ORDER_PROVIDER]);
   const unavailable = [];
 
   for (const providerName of providerNames) {
-    if (!providers[providerName]) {
-      unavailable.push({ providerName, status: "UNSUPPORTED", reason: "Provider is not registered" });
-      continue;
-    }
-
-    const health = await getProviderHealth(providerName);
+    const health = await getProviderHealthFn(providerName);
     if (health.status === "DISABLED") {
       unavailable.push({ providerName, status: health.status, reason: health.disabledReason });
-      logProviderEvent("provider_disabled", {
+      logProviderEventFn("provider_disabled", {
         provider: providerName,
         status: health.status,
         disabledReason: health.disabledReason,
@@ -39,10 +50,10 @@ export async function resolveOrderProvider({ preferredProvider = PRIMARY_PROVIDE
       continue;
     }
 
-    logProviderEvent("provider_selected", {
+    logProviderEventFn("provider_selected", {
       provider: providerName,
       status: health.status,
-      preferredProvider,
+      preferredProvider: requestedProvider,
     });
 
     return {
@@ -54,8 +65,8 @@ export async function resolveOrderProvider({ preferredProvider = PRIMARY_PROVIDE
     };
   }
 
-  logProviderEvent("provider_unavailable", {
-    preferredProvider,
+  logProviderEventFn("provider_unavailable", {
+    preferredProvider: requestedProvider,
     unavailable,
   });
 
@@ -70,4 +81,14 @@ export async function resolveOrderProvider({ preferredProvider = PRIMARY_PROVIDE
 
 function uniqueProviderNames(names) {
   return names.filter((name, index) => name && names.indexOf(name) === index);
+}
+
+function normalizeProviderName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function assertSupportedProvider(providerName) {
+  if (!providers[providerName]) {
+    throw new Error(`Unsupported order provider: ${providerName}`);
+  }
 }
