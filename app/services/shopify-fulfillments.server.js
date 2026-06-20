@@ -132,7 +132,7 @@ export function buildFulfillmentInput(order, tracking) {
       company: tracking.carrier,
       url: tracking.trackingUrl || undefined,
     },
-    notifyCustomer: true,
+    notifyCustomer: false,
   };
 }
 

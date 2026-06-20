@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { processFulfillmentJob } from "../app/services/fulfillment/fulfillment-sync.server.js";
+import { buildFulfillmentInput } from "../app/services/shopify-fulfillments.server.js";
 
 test("processFulfillmentJob does not call provider APIs and allows tracked PriceYak provider orders", async () => {
   const calls = {
@@ -130,6 +131,19 @@ test("fulfillment worker and fulfillment sync do not call order providers or add
   assert.doesNotMatch(combined, /getOrderProvider|resolveOrderProvider|createZincProvider|createPriceYakProvider|zincFetch|priceyak/i);
   assert.doesNotMatch(combined, /refundCreate/);
   assert.doesNotMatch(combined, /notifyCustomer\s*:\s*true/);
+});
+
+test("Shopify fulfillment input disables customer notifications and has no refundCreate path", () => {
+  const input = buildFulfillmentInput(makeFulfillmentContext(), {
+    trackingNumber: "1ZTEST1234567890",
+    carrier: "UPS",
+    trackingUrl: "https://carrier.example/track/1ZTEST1234567890",
+  });
+  const source = readFileSync(new URL("../app/services/shopify-fulfillments.server.js", import.meta.url), "utf8");
+
+  assert.equal(input.notifyCustomer, false);
+  assert.doesNotMatch(source, /notifyCustomer\s*:\s*true/);
+  assert.doesNotMatch(source, /refundCreate/);
 });
 
 function makeFulfillmentJob(overrides = {}) {
