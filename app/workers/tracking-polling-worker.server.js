@@ -83,26 +83,28 @@ export function initTrackingPollingWorkers() {
 }
 
 async function processTrackingPollJob(job) {
-  const existingProviderOrder = await getProviderOrder(job);
+  const selectedProvider = resolveTrackingProviderForJob(job);
+  const trackingJob = { ...job, provider: selectedProvider.providerName };
+  const existingProviderOrder = await getProviderOrder(trackingJob);
   if (!existingProviderOrder) {
-    logTrackingEvent("tracking_poll_skipped", job, { reason: "provider_order_missing" });
+    logTrackingEvent("tracking_poll_skipped", trackingJob, { reason: "provider_order_missing" });
     throw new PermanentTrackingError("Provider order id is missing");
   }
   if (!isEligibleForAutomaticPolling(existingProviderOrder)) {
-    logTrackingEvent("tracking_poll_skipped", job, {
+    logTrackingEvent("tracking_poll_skipped", trackingJob, {
       reason: "ineligible_provider_status",
       providerStatus: existingProviderOrder.status,
     });
     return;
   }
 
-  const providerOrder = await acquireTrackingLock(job);
+  const providerOrder = await acquireTrackingLock(trackingJob);
   if (!providerOrder) {
     throw retryableError("Tracking polling lock is held by another worker", "LOCKED");
   }
 
   if (providerOrder.trackingNumber && providerOrder.trackingCarrier) {
-    logTrackingEvent("tracking_duplicate_skipped", job, {
+    logTrackingEvent("tracking_duplicate_skipped", trackingJob, {
       providerOrderId: providerOrder.providerOrderId,
       trackingNumber: providerOrder.trackingNumber,
       carrier: providerOrder.trackingCarrier,
@@ -112,8 +114,7 @@ async function processTrackingPollJob(job) {
 
   validateProviderOrder(providerOrder);
 
-  const provider = getOrderProvider(job.provider);
-  const tracking = sanitizeTracking(await provider.getTracking(providerOrder.providerOrderId));
+  const tracking = sanitizeTracking(await selectedProvider.provider.getTracking(providerOrder.providerOrderId));
   const providerState = normalizeProviderState(tracking.status);
 
   await prisma.providerOrder.update({
@@ -127,22 +128,30 @@ async function processTrackingPollJob(job) {
   });
 
   if (providerState === "FAILED") {
-    throw new PermanentTrackingError("Zinc order failed before tracking was available");
+    throw new PermanentTrackingError("Provider order failed before tracking was available");
   }
 
   if (!tracking.trackingNumber) {
-    return handleTrackingNotReady(job, providerOrder, tracking);
+    return handleTrackingNotReady(trackingJob, providerOrder, tracking);
   }
 
   validateTracking(tracking);
 
   await processTrackingReceipt({
-    job,
+    job: trackingJob,
     providerOrder,
     tracking,
     providerState,
     source: "tracking.poll",
   });
+}
+
+export function resolveTrackingProviderForJob(job = {}) {
+  const providerName = normalizeTrackingProviderName(job.provider);
+  return {
+    providerName,
+    provider: getOrderProvider(providerName),
+  };
 }
 
 export async function handleTrackingNotReady(job, providerOrder, tracking, deps = {}) {
@@ -360,4 +369,8 @@ function maskTrackingNumber(value) {
   const text = String(value || "");
   if (text.length <= 4) return "[masked]";
   return `${text.slice(0, 2)}***${text.slice(-2)}`;
+}
+
+function normalizeTrackingProviderName(value) {
+  return String(value || "").trim().toLowerCase() || "zinc";
 }

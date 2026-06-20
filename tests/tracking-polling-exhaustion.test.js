@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   handleTrackingNotReady,
   isTrackingPollingExhausted,
+  resolveTrackingProviderForJob,
 } from "../app/workers/tracking-polling-worker.server.js";
 
 test("isTrackingPollingExhausted returns false before maxAttempts", () => {
@@ -12,6 +13,45 @@ test("isTrackingPollingExhausted returns false before maxAttempts", () => {
 
 test("isTrackingPollingExhausted returns true at maxAttempts", () => {
   assert.equal(isTrackingPollingExhausted({ attempts: 5, maxAttempts: 5 }), true);
+});
+
+test("resolveTrackingProviderForJob defaults legacy jobs without provider to zinc", () => {
+  const selected = resolveTrackingProviderForJob({ type: "tracking.poll" });
+  assert.equal(selected.providerName, "zinc");
+  assert.equal(selected.provider.name, "zinc");
+});
+
+test("resolveTrackingProviderForJob uses zinc provider for zinc tracking jobs", () => {
+  const selected = resolveTrackingProviderForJob({ type: "tracking.poll", provider: "zinc" });
+  assert.equal(selected.providerName, "zinc");
+  assert.equal(selected.provider.name, "zinc");
+});
+
+test("resolveTrackingProviderForJob uses PriceYak skeleton and returns safe tracking error", async () => {
+  const selected = resolveTrackingProviderForJob({ type: "tracking.poll", provider: "priceyak" });
+  assert.equal(selected.providerName, "priceyak");
+  assert.equal(selected.provider.name, "priceyak");
+
+  await assert.rejects(
+    () => selected.provider.getTracking("provider-order-1", {
+      apiKey: "should-not-appear",
+      address: "private address",
+    }),
+    (err) => (
+      err.code === "PRICEYAK_NOT_IMPLEMENTED" &&
+      err.provider === "priceyak" &&
+      err.retryable === false &&
+      err.manualReviewRequired === true &&
+      !containsSensitiveText(err)
+    )
+  );
+});
+
+test("resolveTrackingProviderForJob rejects unsupported providers without fallback", () => {
+  assert.throws(
+    () => resolveTrackingProviderForJob({ type: "tracking.poll", provider: "unknown" }),
+    /Unsupported order provider: unknown/
+  );
 });
 
 test("handleTrackingNotReady reschedules when attempts are below maxAttempts", async () => {
@@ -84,3 +124,22 @@ test("handleTrackingNotReady marks the provider order manual review and stops wh
   assert.equal(calls.monitoring[0].eventType, "tracking_polling_exhausted");
   assert.equal(calls.monitoring[0].details.failureCategory, "TRACKING_TIMEOUT");
 });
+
+function containsSensitiveText(err) {
+  const text = JSON.stringify({
+    message: err?.message,
+    code: err?.code,
+    provider: err?.provider,
+  });
+  return [
+    "should-not-appear",
+    "apiKey",
+    "api_key",
+    "token",
+    "customer",
+    "address",
+    "private address",
+    "raw",
+    "payment",
+  ].some((value) => text.includes(value));
+}
