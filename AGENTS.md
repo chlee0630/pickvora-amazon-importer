@@ -162,6 +162,33 @@ secret
 
 Normal order workers must fetch required sensitive order details through Shopify Admin API read-only queries at processing time instead of relying on queue payload.
 
+## Order Provider Handoff Rules
+
+As of local commit `66f9478 Prepare provider abstraction with Zinc as default`, local source code has the order provider abstraction needed for a future PriceYak or other order provider adapter. This local source state is not proof of production deployment. Verify `/var/www/pickvora-amazon-importer` separately before making production claims.
+
+Current order provider rules:
+
+- Zinc remains the default and rollback order provider.
+- `ORDER_PROVIDER` unset must default to `zinc`.
+- Provider selection priority is explicit provider argument, configured `ORDER_PROVIDER`, then default `zinc`.
+- Unsupported providers must fail explicitly and must not silently fall back to Zinc.
+- Do not set production `ORDER_PROVIDER=priceyak`.
+- `app/services/order-providers/priceyak.server.js` is a skeleton only.
+- PriceYak `createOrder`, `getOrderStatus`, `getTracking`, and `cancelOrder` must remain safe not-implemented behavior until official API documentation or user-provided official request/response examples are available.
+- Do not implement PriceYak or any order provider from guessed endpoints, private browser requests, or unverified network payloads.
+
+Order provider safety rules:
+
+- HIGH fraud provider submit blocking is provider-neutral; it applies to Zinc and any future provider.
+- HIGH fraud block paths must stop before provider submit and preserve `ProviderOrder.requestPayload=null` and `ProviderOrder.responsePayload=null`.
+- The DB field name `blockZincOnHighRisk` remains for schema compatibility and is interpreted as HIGH-risk provider submit block.
+- `tracking.poll` uses `job.provider`; missing legacy provider defaults to Zinc, and unsupported providers fail without fallback.
+- `fulfillment.update` must not call Zinc, PriceYak, or other provider APIs directly.
+- Shopify fulfillment input must keep `notifyCustomer=false`; never add `notifyCustomer=true`.
+- Never add `refundCreate`.
+
+Before another AI tool continues order provider work, read `docs/order-provider-handoff.md`, `current-architecture.md`, `CHANGELOG.md`, and this file. Prepare a patch plan before code changes, run the validation baseline, and get explicit user approval before any production operation.
+
 ## Amazon Product Provider Rules
 
 EasyParser is the default Amazon product detail provider as of local commit:

@@ -1,5 +1,38 @@
 # Project Changelog
 
+## 2026-06-21
+
+### Documentation
+
+- Added `docs/order-provider-handoff.md` for Gemini or another AI development tool to continue order provider work safely.
+- Clarified local source state versus actual production server deployment state.
+- Documented that local HEAD `66f9478 Prepare provider abstraction with Zinc as default` keeps Zinc as the default and rollback order provider.
+- Documented that PriceYak remains skeleton-only and must not be enabled in production.
+- Documented that PriceYak official order API support and documentation are still pending.
+
+### Safety
+
+- Reiterated provider-neutral HIGH fraud blocking, `requestPayload=null` and `responsePayload=null` preservation, `notifyCustomer=false`, and the ban on `refundCreate`.
+- Reiterated that provider APIs must not be implemented from guessed endpoints, private browser requests, or undocumented network payloads.
+- Confirmed no application code, tests, Prisma schema, `.env`, package files, Shopify TOML, production server files, or DB state were changed as part of this documentation handoff.
+
+### Verified Baseline
+
+- `git diff --check` passed.
+- `npm test` baseline is 101 passed.
+- `npm run typecheck` baseline passed.
+- `npm run build` baseline passed.
+- No actual order creation, Shopify mutation, production DB write, deployment, or systemd restart was performed.
+
+### Known Build Warnings
+
+- npm reports an unknown project config warning for `shamefully-hoist`.
+- Some routes generate empty chunk messages.
+- Vite warns that order, tracking, and fulfillment workers are used by both dynamic import and static import paths.
+- These warnings are not current build failures, but should be reviewed during future npm or Vite upgrades.
+
+---
+
 ## 2026-06-20
 
 ### Added

@@ -354,6 +354,13 @@ All providers should support:
 
 Order provider selection has been prepared for a future PriceYak transition without implementing live PriceYak API calls.
 
+Local source and production deployment must be treated separately:
+
+* Local source has this provider abstraction at commit `66f9478 Prepare provider abstraction with Zinc as default`.
+* This does not prove the same commit is deployed on `/var/www/pickvora-amazon-importer`.
+* Verify production server Git state separately before making production claims.
+* Existing production behavior must remain Zinc until a separate deploy and environment-change approval is given.
+
 Current order provider files:
 
 * `app/services/order-providers/index.server.js`
@@ -387,6 +394,8 @@ PriceYak skeleton status:
 * `createOrder()`, `getTracking()`, `getOrderStatus()`, and `cancelOrder()` return a safe `PRICEYAK_NOT_IMPLEMENTED` error.
 * Raw request/response payload storage remains forbidden.
 * PriceYak real order submission is not implemented.
+* PriceYak order API availability and official order API documentation are still pending.
+* Do not implement from private browser requests, guessed endpoints, or undocumented network payloads.
 
 Fraud Protection provider safety:
 
@@ -416,18 +425,43 @@ Fulfillment provider path:
 * `notifyCustomer=true` remains forbidden.
 * `refundCreate` remains forbidden and was not added.
 
+Privacy and log safety:
+
+Never store, log, or document API keys, secrets, tokens, `id_token`, HMAC values, session values, Authorization headers, customer names, customer addresses, phone numbers, email addresses, payment data, browser payloads, raw Shopify order payloads, raw provider request/response payloads, or authenticated URLs/query strings. Persist only safe summaries.
+
+Prisma and queue compatibility:
+
+* No Prisma migration was required for the current provider transition preparation.
+* `ProviderOrder.provider`, `OrderQueueJob.provider`, and `DeadLetterQueueJob.provider` can carry string provider names.
+* Future schema changes should be considered only if a new provider requires multi-shipment, multi-tracking, or provider-specific sub-order structures.
+
 Validation completed for the PriceYak preparation work:
 
 ```text
 git diff --check
 npm test
+npm run typecheck
+npm run build
 ```
 
 Current confirmed test result:
 
 ```text
-101 passed
+npm test: 101 passed
+npm run typecheck: passed
+npm run build: passed
+git diff --check: passed
 ```
+
+No actual order creation, Shopify mutation, production DB write, deployment, or systemd restart was performed during this validation.
+
+Known non-blocking build warnings:
+
+* npm reports an unknown project config warning for `shamefully-hoist`.
+* Some routes generate empty chunk messages.
+* Vite warns that order, tracking, and fulfillment workers are used by both dynamic import and static import paths.
+
+These warnings did not fail the current build, but should be reviewed during future npm or Vite upgrades.
 
 PriceYak implementation prerequisites:
 
@@ -456,7 +490,10 @@ Operational restrictions:
 * Do not set `ORDER_PROVIDER=priceyak` in production yet.
 * Do not submit live production orders through PriceYak.
 * Do not deploy, restart systemd services, or run DB migrations for PriceYak until a documented adapter is implemented and validated.
+* Do not run Shopify mutations or production DB writes without explicit approval for the exact action.
+* Do not modify protected historical orders `#1005` through `#1023`.
 * Dev/test mock or dry-run validation is required before any production transition.
+* See `docs/order-provider-handoff.md` before continuing this work in another AI tool.
 
 ---
 
