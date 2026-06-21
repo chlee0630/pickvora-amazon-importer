@@ -1,5 +1,56 @@
 # Project Changelog
 
+## 2026-06-20
+
+### Added
+
+- Added documentation for order provider selector preparation for a future PriceYak transition.
+- Documented `ORDER_PROVIDER` behavior:
+  - unset defaults to `zinc`
+  - `ORDER_PROVIDER=zinc` keeps Zinc selected
+  - `ORDER_PROVIDER=priceyak` selects only the PriceYak skeleton provider
+  - unsupported providers fail explicitly without fallback
+- Documented the PriceYak skeleton provider at `app/services/order-providers/priceyak.server.js`.
+- Documented that PriceYak `createOrder`, `getTracking`, `getOrderStatus`, and `cancelOrder` currently return safe `PRICEYAK_NOT_IMPLEMENTED` errors.
+
+### Changed
+
+- Documented that `order.create` enqueue provider priority is:
+  - explicit provider argument
+  - configured `ORDER_PROVIDER`
+  - default `zinc`
+- Documented that the orders/create webhook no longer hardcodes `provider: "zinc"` for new `order.create` jobs.
+- Documented that HIGH fraud submit blocking is now provider-neutral while the existing `blockZincOnHighRisk` DB field name is preserved.
+- Documented that `tracking.poll` selects providers from `job.provider`, defaults legacy missing-provider jobs to Zinc, and fails unsupported providers without fallback.
+- Documented that `fulfillment.update` does not call Zinc or PriceYak APIs directly and remains driven by `ProviderOrder` plus tracking payload state.
+- Documented that Shopify fulfillment input now uses `notifyCustomer=false`.
+
+### Security
+
+- Confirmed PriceYak live API calls are not implemented.
+- Confirmed PriceYak endpoint, authentication, request payload, and response payload details were not guessed.
+- Confirmed raw provider payload storage remains forbidden.
+- Confirmed HIGH fraud block paths preserve `ProviderOrder.requestPayload=null` and `ProviderOrder.responsePayload=null`.
+- Confirmed `refundCreate` was not added.
+- Confirmed fulfillment no longer uses `notifyCustomer=true`.
+- Confirmed no API keys, tokens, customer data, address data, payment data, browser payloads, raw order payloads, or raw provider payloads are documented.
+
+### Verified
+
+- `git diff --check` passed.
+- `npm test` passed with 101 tests.
+- Selector, order queue, order worker fraud block, tracking provider path, fulfillment provider-neutral, Shopify fulfillment notification, and Zinc rollback tests passed.
+
+### Operational Notes
+
+- Zinc remains the default and rollback order provider.
+- Production must not set `ORDER_PROVIDER=priceyak` yet.
+- PriceYak production order submission is not implemented and must not be used.
+- PriceYak adapter implementation must wait for official PriceYak documentation or user-provided examples for authentication, order creation, status, tracking, cancellation, idempotency, error handling, retries, rate limits, timeouts, and payload redaction requirements.
+- No production deploy, systemd restart, DB migration, Shopify mutation, order action, cancellation, refund, or fulfillment action is part of this documentation update.
+
+---
+
 ## 2026-06-19
 
 ### Added

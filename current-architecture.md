@@ -18,7 +18,7 @@ Main goals:
 
 * Process Shopify orders automatically
 
-* Submit Amazon orders through Zinc API
+* Submit Amazon orders through the configured order provider
 
 * Sync fulfillment tracking back to Shopify
 
@@ -63,6 +63,8 @@ Main goals:
 * Rainforest API legacy rollback provider
 
 * Zinc API
+
+* PriceYak skeleton provider, not live
 
 
 
@@ -210,9 +212,9 @@ Current system uses:
 
 6. Build normalized order payload
 
-7. Submit Zinc order
+7. Submit order through configured provider
 
-8. Save Zinc response
+8. Save provider response
 
 9. Tracking polling worker checks tracking
 
@@ -256,7 +258,7 @@ Current system uses:
 
 * duplicate webhook prevention
 
-* duplicate Zinc order prevention
+* duplicate provider order prevention
 
 * duplicate fulfillment prevention
 
@@ -345,6 +347,116 @@ All providers should support:
 * cancelOrder()
 
 
+
+---
+
+# Order Provider Selector and PriceYak Preparation
+
+Order provider selection has been prepared for a future PriceYak transition without implementing live PriceYak API calls.
+
+Current order provider files:
+
+* `app/services/order-providers/index.server.js`
+* `app/services/order-providers/zinc.server.js`
+* `app/services/order-providers/priceyak.server.js`
+
+Provider selection behavior:
+
+* Zinc remains the default and rollback order provider.
+* `ORDER_PROVIDER` controls the configured order provider.
+* If `ORDER_PROVIDER` is unset, the default provider is `zinc`.
+* `ORDER_PROVIDER=zinc` selects the existing Zinc provider.
+* `ORDER_PROVIDER=priceyak` selects the PriceYak skeleton provider only.
+* Unsupported provider names fail explicitly and do not silently fall back.
+
+Order create enqueue provider priority:
+
+```text
+explicit provider argument
+configured ORDER_PROVIDER
+default zinc
+```
+
+The orders/create webhook no longer hardcodes `provider: "zinc"` for new `order.create` jobs. With no environment change, production behavior remains Zinc.
+
+PriceYak skeleton status:
+
+* `app/services/order-providers/priceyak.server.js` is present.
+* It performs no real API calls.
+* It does not implement or guess PriceYak endpoint, authentication, request payload, or response payload details.
+* `createOrder()`, `getTracking()`, `getOrderStatus()`, and `cancelOrder()` return a safe `PRICEYAK_NOT_IMPLEMENTED` error.
+* Raw request/response payload storage remains forbidden.
+* PriceYak real order submission is not implemented.
+
+Fraud Protection provider safety:
+
+* HIGH fraud block is provider-neutral.
+* If HIGH risk and the block setting is enabled, provider submit is blocked before any order provider call, whether the selected provider is `zinc` or `priceyak`.
+* `ProviderOrder.requestPayload` remains `null` on HIGH fraud block paths.
+* `ProviderOrder.responsePayload` remains `null` on HIGH fraud block paths.
+* The database field remains `blockZincOnHighRisk`; internally this is treated as HIGH risk provider submit block.
+* `refundCreate` remains forbidden and was not added.
+
+Tracking provider path:
+
+* `tracking.poll` uses `job.provider` to select the order provider.
+* Legacy `tracking.poll` jobs without a provider default to `zinc`.
+* `job.provider=priceyak` selects the PriceYak skeleton and fails with the safe not-implemented error.
+* Unsupported provider names fail explicitly and do not fall back to Zinc.
+* `ZINC_SUBMITTED` remains an eligible polling state for the existing Zinc flow.
+* No `PRICEYAK_SUBMITTED` or generic replacement status has been added because the real PriceYak status contract is not known yet.
+
+Fulfillment provider path:
+
+* `fulfillment.update` does not call Zinc or PriceYak provider APIs directly.
+* Fulfillment sync uses `ProviderOrder` plus tracking payload state and then calls the Shopify fulfillment helper.
+* Provider name alone does not block fulfillment when tracking state is already present.
+* Missing tracking data fails before Shopify fulfillment is requested.
+* Shopify fulfillment input uses `notifyCustomer=false`.
+* `notifyCustomer=true` remains forbidden.
+* `refundCreate` remains forbidden and was not added.
+
+Validation completed for the PriceYak preparation work:
+
+```text
+git diff --check
+npm test
+```
+
+Current confirmed test result:
+
+```text
+101 passed
+```
+
+PriceYak implementation prerequisites:
+
+PriceYak adapter implementation must wait for official PriceYak documentation or user-provided examples for:
+
+* authentication method
+* order creation endpoint
+* order creation request and response examples
+* Amazon item identifier requirements
+* shipping address required fields
+* idempotency support
+* dry-run or sandbox support
+* order status endpoint
+* provider status values
+* tracking endpoint
+* tracking number, carrier, and URL fields
+* cancel API support
+* error response format
+* retryable error classification
+* manual review error classification
+* rate limit and timeout recommendations
+* raw payload fields that must never be stored
+
+Operational restrictions:
+
+* Do not set `ORDER_PROVIDER=priceyak` in production yet.
+* Do not submit live production orders through PriceYak.
+* Do not deploy, restart systemd services, or run DB migrations for PriceYak until a documented adapter is implemented and validated.
+* Dev/test mock or dry-run validation is required before any production transition.
 
 ---
 
@@ -929,7 +1041,7 @@ When a Shopify order webhook is received:
 5. The worker fetches required order details through Shopify Admin API read-only queries.
 6. Fraud risk is assessed.
 7. If HIGH risk and production guards pass:
-   * Zinc submit is blocked before provider submission.
+   * Provider submit is blocked before provider submission.
    * `ProviderOrder` is moved to `MANUAL_REVIEW`.
    * `ProviderOrder.requestPayload` and `ProviderOrder.responsePayload` remain `null`.
    * Shopify `orderCancel` is requested.
@@ -1024,7 +1136,7 @@ line_items[].title
 line_items[].quantity
 ```
 
-The worker must not depend on queue payload for sensitive order details. Required order details, including shipping address for normal Zinc submission, must be reloaded through Shopify Admin API read-only queries during worker execution.
+The worker must not depend on queue payload for sensitive order details. Required order details, including shipping address for normal provider submission, must be reloaded through Shopify Admin API read-only queries during worker execution.
 
 ### Blocked Payload Content
 
