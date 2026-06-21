@@ -286,6 +286,8 @@ Supported states:
 
 * PROCESSING
 
+* ZINC_DRY_RUN
+
 * ZINC_SUBMITTED
 
 * ORDERED
@@ -385,6 +387,16 @@ default zinc
 ```
 
 The orders/create webhook no longer hardcodes `provider: "zinc"` for new `order.create` jobs. With no environment change, production behavior remains Zinc.
+
+Current dev verification note for 2026-06-21:
+
+* Development order `#1024` on `pickvora-dev.myshopify.com` completed a Zinc dry-run successfully.
+* The dry-run result stored `ProviderOrder.status = ZINC_DRY_RUN`.
+* No external Zinc HTTP request was made.
+* No `tracking.poll` job was enqueued.
+* No `fulfillment.update` job was enqueued.
+* `#1024` is evidence only and must not be reused for tracking injection, queue replay, or fulfillment mutation.
+* The separate Zinc test-success path was only investigated read-only today and was not executed.
 
 PriceYak skeleton status:
 

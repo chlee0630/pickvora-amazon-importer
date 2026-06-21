@@ -9,11 +9,14 @@
 - Documented that local HEAD `66f9478 Prepare provider abstraction with Zinc as default` keeps Zinc as the default and rollback order provider.
 - Documented that PriceYak remains skeleton-only and must not be enabled in production.
 - Documented that PriceYak official order API support and documentation are still pending.
+- Recorded the read-only Zinc dry-run verification on development order `#1024` and marked it as a protected evidence order.
+- Recorded that the separate Zinc test-success path was investigated read-only today but not executed.
 
 ### Safety
 
 - Reiterated provider-neutral HIGH fraud blocking, `requestPayload=null` and `responsePayload=null` preservation, `notifyCustomer=false`, and the ban on `refundCreate`.
 - Reiterated that provider APIs must not be implemented from guessed endpoints, private browser requests, or undocumented network payloads.
+- Reiterated that `#1024` must not be reprocessed, replayed, injected, or used for fulfillment mutation.
 - Confirmed no application code, tests, Prisma schema, `.env`, package files, Shopify TOML, production server files, or DB state were changed as part of this documentation handoff.
 
 ### Verified Baseline
@@ -23,6 +26,7 @@
 - `npm run typecheck` baseline passed.
 - `npm run build` baseline passed.
 - No actual order creation, Shopify mutation, production DB write, deployment, or systemd restart was performed.
+- The Zinc dry-run result for `#1024` was `ProviderOrder.status = ZINC_DRY_RUN` with no external Zinc HTTP request, no tracking poll, and no fulfillment job.
 
 ### Known Build Warnings
 

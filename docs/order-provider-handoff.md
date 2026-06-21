@@ -27,7 +27,7 @@ prod-fraud-full-release
 Current verified local HEAD:
 
 ```text
-66f9478 Prepare provider abstraction with Zinc as default
+77a2a1e Remove automatic migration from Shopify dev command
 ```
 
 Stores:
@@ -47,6 +47,13 @@ Order provider status:
 - Zinc remains the current default order provider.
 - PriceYak order API availability is still pending support confirmation.
 - Official PriceYak order API documentation has not been received.
+- Local provider abstraction work is present from commit `66f9478 Prepare provider abstraction with Zinc as default`.
+
+Protected dev evidence order:
+
+- Development order `#1024` on `pickvora-dev.myshopify.com` is a protected Zinc dry-run evidence order.
+- Its confirmed state is `ProviderOrder.status = ZINC_DRY_RUN`.
+- It must not be reprocessed, replayed, injected, canceled, refunded, fulfilled, or used for queue replay.
 
 ## Local Source State Vs Production State
 
@@ -55,6 +62,7 @@ Local source code state:
 - Provider selector work is present at local commit `66f9478`.
 - `ORDER_PROVIDER` can select `zinc` or the PriceYak skeleton.
 - PriceYak live order submission, status, tracking, and cancellation are not implemented.
+- The Zinc test-success path was investigated read-only on 2026-06-21, but no live Zinc submit, tracking injection, or fulfillment mutation was executed.
 
 Production server state:
 
@@ -263,9 +271,13 @@ Minimum provider capabilities:
 
 1. Read `AGENTS.md`, `current-architecture.md`, `CHANGELOG.md`, and this handoff.
 2. Check Git branch, status, and recent log before changing files.
-3. Confirm Zinc remains the default order provider.
-4. Confirm PriceYak remains skeleton-only.
-5. Do not infer production deployment; verify production server state separately.
-6. Write a patch plan before code changes.
-7. Confirm baseline with tests, typecheck, and build before risky work.
-8. Get user approval before any production operation.
+3. Confirm `#1005` through `#1024` are protected and not eligible for replay or mutation.
+4. Reconfirm the read-only Zinc test-success investigation result and separate it from implemented behavior.
+5. Confirm Zinc remains the default order provider.
+6. Confirm PriceYak remains skeleton-only.
+7. Use only a new dev order if further Zinc end-to-end work is approved.
+8. Check the temporary dev environment gate before any submit path.
+9. Do not infer production deployment; verify production server state separately.
+10. Write a patch plan before code changes.
+11. Confirm baseline with tests, typecheck, and build before risky work.
+12. Get user approval before any live Zinc submit, test tracking injection, Shopify fulfillment mutation, or production operation.
