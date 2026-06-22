@@ -50,7 +50,11 @@ Production branch:
 
 Current production commit:
 
-- `73a5355 Add production fraud refund guard and payload sanitizers`
+- `b0862b5 Document Zinc test-success validation`
+
+Current production order-provider deployment baseline:
+
+- Production deployment completed on 2026-06-23 and remains active until separately changed.
 
 Production shop:
 
@@ -105,6 +109,8 @@ Protected historical orders:
 ```text
 #1005 through #1025
 ```
+
+- Development order `#1025` is protected Zinc test-success evidence and must not be replayed, injected, canceled, refunded, or fulfilled.
 
 Allowed mutation behavior:
 

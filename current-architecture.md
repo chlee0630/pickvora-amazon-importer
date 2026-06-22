@@ -362,6 +362,7 @@ Local source and production deployment must be treated separately:
 * This does not prove the same commit is deployed on `/var/www/pickvora-amazon-importer`.
 * Verify production server Git state separately before making production claims.
 * Existing production behavior must remain Zinc until a separate deploy and environment-change approval is given.
+* Production deployment of the current order-provider release completed on 2026-06-23 at commit `b0862b5 Document Zinc test-success validation`.
 
 Current order provider files:
 
@@ -1053,12 +1054,14 @@ As of 2026-06-13, the production branch and server include the completed Fraud P
 Current production release:
 
 * Branch: `prod-fraud-full-release`
-* Latest production commit: `73a5355 Add production fraud refund guard and payload sanitizers`
+* Latest production commit: `b0862b5 Document Zinc test-success validation`
 * Production shop: `cmgpwd-ty.myshopify.com`
 * Production server path: `/var/www/pickvora-amazon-importer`
+* Production DB: `/var/www/pickvora-amazon-importer/prisma/dev.sqlite`
 * Services:
   * `pickvora-web`
   * `pickvora-tracking-worker`
+* Web and tracking worker share the same SQLite database on the production host.
 
 Current live production FraudProtectionConfig:
 
@@ -1273,16 +1276,18 @@ Verified:
 
 ## Production Deployment Verification Completed
 
-Production server verification completed:
+Production deployment activation completed on 2026-06-23:
 
-* server pulled commit `73a5355`
-* `npm install` completed
-* `npm run typecheck` passed
-* `npm run build` passed
-* `pickvora-web` restarted and active
-* `pickvora-tracking-worker` restarted and active
-* systemd environment variables confirmed for both services
-* production config activated with `liveFraudRefundEnabled=true`
+* server fast-forwarded from `236e0cd` to `b0862b5`
+* staged build at `/var/www/pickvora-build-b0862b5` passed production build checks
+* dependency install was not run
+* Prisma generate was not run
+* Prisma migration was not run
+* live build was replaced from staging after backup of the previous build
+* `pickvora-web` restarted successfully and remained active
+* `pickvora-tracking-worker` restarted successfully and remained active
+* final queue snapshot at activation time: `OrderQueueJob=0`, `DeadLetterQueueJob=0`
+* no production DB write, Shopify mutation, or external Zinc/PriceYak call was performed during activation
 
 ## Emergency Rollback
 

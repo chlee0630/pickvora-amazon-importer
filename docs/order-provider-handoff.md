@@ -1,6 +1,6 @@
 # Order Provider Handoff
 
-Last updated: 2026-06-22.
+Last updated: 2026-06-23.
 
 This handoff is for continuing the Shopify Amazon Importer order provider work with another AI development tool. It summarizes the current local source state and the next safe work points. It does not prove that the same source is deployed in production.
 
@@ -49,6 +49,19 @@ Order provider status:
 - Official PriceYak order API documentation has not been received.
 - Local provider abstraction work is present from commit `66f9478 Prepare provider abstraction with Zinc as default`.
 
+## Production Deployment Baseline
+
+Production deployment completed on 2026-06-23:
+
+- Production branch `prod-fraud-full-release` fast-forwarded from `236e0cd` to `b0862b5`.
+- Production server path is `/var/www/pickvora-amazon-importer`.
+- Production DB path is `/var/www/pickvora-amazon-importer/prisma/dev.sqlite`.
+- Web service `pickvora-web.service` and tracking worker service `pickvora-tracking-worker.service` were restarted successfully under systemd.
+- Live build was replaced from staging build `/var/www/pickvora-build-b0862b5` after preserving the previous live build backup at `/var/www/pickvora-amazon-importer/build.backup-before-b0862b5-20260623-000248`.
+- Final deployment-time queue snapshot was `OrderQueueJob=0` and `DeadLetterQueueJob=0`; this is a point-in-time snapshot, not a permanent invariant.
+- No Prisma generate, Prisma migration, dependency install, manual DB write, Shopify mutation, Zinc call, or PriceYak call was performed during deployment activation.
+- This records operational deployment and service activation only; it does not mean a real production order E2E test was performed.
+
 Protected dev evidence order:
 
 - Development order `#1024` on `pickvora-dev.myshopify.com` is a protected Zinc dry-run evidence order.
@@ -70,8 +83,9 @@ Local source code state:
 
 Production server state:
 
-- Do not infer deployment from local Git history.
-- Check `/var/www/pickvora-amazon-importer` directly before stating what is deployed.
+- Production deployment was confirmed on 2026-06-23 at commit `b0862b5 Document Zinc test-success validation`.
+- Do not infer further changes from local Git history.
+- Check `/var/www/pickvora-amazon-importer` directly before stating what is deployed after this baseline.
 - Do not deploy, restart services, run migrations, or change production environment without explicit user approval.
 
 ## Validation Baseline

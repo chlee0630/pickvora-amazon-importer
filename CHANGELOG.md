@@ -1,5 +1,21 @@
 # Project Changelog
 
+## 2026-06-23
+
+### Production Deployment
+
+- Recorded the completed production deployment of commit `b0862b5` on `prod-fraud-full-release`.
+- Recorded the systemd activation of `pickvora-web.service` and `pickvora-tracking-worker.service` after the staging build was promoted to live.
+- Recorded that the deployment-time queue snapshot was `OrderQueueJob=0` and `DeadLetterQueueJob=0`.
+- Recorded that the live build was replaced from `/var/www/pickvora-build-b0862b5` after preserving the previous live build backup.
+- Recorded that no dependency install, Prisma generate, Prisma migration, manual DB write, Shopify mutation, Zinc call, or PriceYak call was performed during deployment activation.
+- Recorded that this was an operational deployment and service activation only, not a real production order E2E test.
+
+### Safety
+
+- Reaffirmed that `#1005 through #1025` remain protected orders.
+- Reaffirmed that `refundCreate` was not used and `notifyCustomer=false` remained in place.
+
 ## 2026-06-22
 
 ### Documentation
