@@ -24,10 +24,10 @@ Branch:
 prod-fraud-full-release
 ```
 
-Current verified local HEAD:
+Handoff baseline confirmed before this documentation correction:
 
 ```text
-77a2a1e Remove automatic migration from Shopify dev command
+9ed1f45 Document Zinc dry-run and test-success handoff
 ```
 
 Stores:

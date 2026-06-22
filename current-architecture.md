@@ -1123,7 +1123,7 @@ Required production conditions:
 Protected historical test orders must not be mutated:
 
 ```text
-#1005 through #1023
+#1005 through #1024
 ```
 
 ## Shopify Mutation Rules
