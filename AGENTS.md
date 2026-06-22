@@ -103,7 +103,7 @@ Production refund is allowed only when all guards pass:
 Protected historical orders:
 
 ```text
-#1005 through #1024
+#1005 through #1025
 ```
 
 Allowed mutation behavior:
@@ -187,6 +187,7 @@ Order provider safety rules:
 - Shopify fulfillment input must keep `notifyCustomer=false`; never add `notifyCustomer=true`.
 - Never add `refundCreate`.
 - `#1024` is a protected Zinc dry-run evidence order; do not reprocess, replay, inject tracking into, or use for fulfillment mutation.
+- `#1025` is a protected Zinc test-success evidence order; do not reprocess, replay, inject tracking into, or use for fulfillment mutation.
 
 Before another AI tool continues order provider work, read `docs/order-provider-handoff.md`, `current-architecture.md`, `CHANGELOG.md`, and this file. Prepare a patch plan before code changes, run the validation baseline, and get explicit user approval before any production operation.
 

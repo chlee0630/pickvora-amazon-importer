@@ -1,5 +1,19 @@
 # Project Changelog
 
+## 2026-06-22
+
+### Documentation
+
+- Updated the protected historical test-order range to `#1005 through #1025`.
+- Recorded the Zinc test-success external submit on development order `#1025` with `ProviderOrder.status = ZINC_SUBMITTED` and no duplicate submit evidence.
+- Noted that the external Zinc verification stopped after submit success and did not wait for follow-up tracking or fulfillment responses.
+- Recorded the passing targeted internal mock checks for synthetic tracking orchestration, `notifyCustomer=false`, and provider-neutral fulfillment behavior.
+
+### Safety
+
+- Reiterated that `#1025` is protected evidence and must not be replayed, injected, fulfilled, canceled, or refunded.
+- Reiterated that no tracking worker, tracking injection, fulfillment mutation, DB write, or external API call was performed as part of the documentation update.
+
 ## 2026-06-21
 
 ### Documentation

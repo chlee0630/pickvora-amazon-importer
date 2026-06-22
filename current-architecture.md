@@ -388,7 +388,7 @@ default zinc
 
 The orders/create webhook no longer hardcodes `provider: "zinc"` for new `order.create` jobs. With no environment change, production behavior remains Zinc.
 
-Current dev verification note for 2026-06-21:
+Current dev verification note for 2026-06-22:
 
 * Development order `#1024` on `pickvora-dev.myshopify.com` completed a Zinc dry-run successfully.
 * The dry-run result stored `ProviderOrder.status = ZINC_DRY_RUN`.
@@ -396,7 +396,10 @@ Current dev verification note for 2026-06-21:
 * No `tracking.poll` job was enqueued.
 * No `fulfillment.update` job was enqueued.
 * `#1024` is evidence only and must not be reused for tracking injection, queue replay, or fulfillment mutation.
-* The separate Zinc test-success path was only investigated read-only today and was not executed.
+* Development order `#1025` on `pickvora-dev.myshopify.com` completed a Zinc test-success submit with `Zinc POST /orders` returning HTTP 201.
+* The external Zinc test-success scope stopped at `ProviderOrder.status = ZINC_SUBMITTED`; follow-up tracking and fulfillment responses were not awaited.
+* `#1025` is evidence only and must not be reused for tracking injection, queue replay, or fulfillment mutation.
+* The internal mock checks for synthetic tracking orchestration, fulfillment input safety, and provider-neutral fulfillment all passed without external API or DB access.
 
 PriceYak skeleton status:
 
@@ -1123,7 +1126,7 @@ Required production conditions:
 Protected historical test orders must not be mutated:
 
 ```text
-#1005 through #1024
+#1005 through #1025
 ```
 
 ## Shopify Mutation Rules

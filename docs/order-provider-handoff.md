@@ -1,6 +1,6 @@
 # Order Provider Handoff
 
-Last updated: 2026-06-21.
+Last updated: 2026-06-22.
 
 This handoff is for continuing the Shopify Amazon Importer order provider work with another AI development tool. It summarizes the current local source state and the next safe work points. It does not prove that the same source is deployed in production.
 
@@ -54,6 +54,9 @@ Protected dev evidence order:
 - Development order `#1024` on `pickvora-dev.myshopify.com` is a protected Zinc dry-run evidence order.
 - Its confirmed state is `ProviderOrder.status = ZINC_DRY_RUN`.
 - It must not be reprocessed, replayed, injected, canceled, refunded, fulfilled, or used for queue replay.
+- Development order `#1025` on `pickvora-dev.myshopify.com` is a protected Zinc test-success evidence order.
+- Its confirmed state is `ProviderOrder.status = ZINC_SUBMITTED`.
+- It must not be reprocessed, replayed, injected, canceled, refunded, fulfilled, or used for queue replay.
 
 ## Local Source State Vs Production State
 
@@ -62,7 +65,8 @@ Local source code state:
 - Provider selector work is present at local commit `66f9478`.
 - `ORDER_PROVIDER` can select `zinc` or the PriceYak skeleton.
 - PriceYak live order submission, status, tracking, and cancellation are not implemented.
-- The Zinc test-success path was investigated read-only on 2026-06-21, but no live Zinc submit, tracking injection, or fulfillment mutation was executed.
+- The Zinc test-success path was verified on 2026-06-22 through external submit success on `#1025`, but follow-up tracking and fulfillment responses were not awaited.
+- Internal mock checks for synthetic tracking orchestration, fulfillment input safety, and provider-neutral fulfillment passed without external API or DB access.
 
 Production server state:
 
@@ -271,8 +275,8 @@ Minimum provider capabilities:
 
 1. Read `AGENTS.md`, `current-architecture.md`, `CHANGELOG.md`, and this handoff.
 2. Check Git branch, status, and recent log before changing files.
-3. Confirm `#1005` through `#1024` are protected and not eligible for replay or mutation.
-4. Reconfirm the read-only Zinc test-success investigation result and separate it from implemented behavior.
+3. Confirm `#1005` through `#1025` are protected and not eligible for replay or mutation.
+4. Reconfirm the Zinc dry-run result for `#1024` and the verified test-success submit result for `#1025`, while separating both from implemented behavior.
 5. Confirm Zinc remains the default order provider.
 6. Confirm PriceYak remains skeleton-only.
 7. Use only a new dev order if further Zinc end-to-end work is approved.
